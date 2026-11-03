@@ -21,6 +21,7 @@ function toast(html, ms=5000){ const t=$('toast'); t.innerHTML=html; t.classList
 let USER=null, CLIENTES=[], CLIENTE=null, BASE=new Map(), META=new Map(), TIPI=new Set();
 let ST=[];   // substituição tributária da UF do cliente (Anexo 007 do RICMS/RN)
 let WB=null, RAW=null, RAWNAME='', SHEET='', HR=0, HEADERS=[], MAPA={}, ITENS=[], FILTRO='all';
+let SELECAO=new Set();   // chaves de itens marcados para edição em lote
 
 /* ============================ AUTENTICAÇÃO ============================ */
 $('gateForm').addEventListener('submit', async e=>{
@@ -263,29 +264,66 @@ async function carregarST(){
 
 /* Substituição tributária pelo anexo oficial da UF — não mais pelo CEST que o
    cliente digitou. O anexo cita NCM em 4, 6 ou 8 dígitos. */
-function consultarST(ncm, desc){
-  if(!ncm || !ST.length) return null;
+function candidatosST(ncm){
+  if(!ncm || !ST.length) return [];
   const achados = ST.filter(s=>ncm.startsWith(s.ncm));
-  if(!achados.length) return null;
-  const d = norm(desc);
+  if(!achados.length) return [];
   const maisEspecifico = achados[0].ncm.length;
-  const candidatos = achados.filter(s=>s.ncm.length===maisEspecifico);
-  if(candidatos.length>1 && d){
-    // só desempata pelo que DISTINGUE os candidatos: palavras comuns a todos
-    // (ex.: "refrigerante") não decidem nada
-    const palavrasDe = c => new Set(norm(c.descricao).split(/[^a-z0-9]+/).filter(p=>p.length>=3));
-    const conjuntos = candidatos.map(palavrasDe);
-    const comuns = [...conjuntos[0]].filter(p=>conjuntos.every(c=>c.has(p)));
-    const termos = d.split(/[^a-z0-9]+/).filter(p=>p.length>=3);
-    let casado=null;
-    candidatos.forEach((c,idx)=>{
-      if(casado) return;
-      const distintas=[...conjuntos[idx]].filter(p=>!comuns.includes(p));
-      if(distintas.some(p=>termos.some(t=>p.startsWith(t.slice(0,4)) || t.startsWith(p.slice(0,4))))) casado=c;
-    });
-    if(casado) return {...casado, confirmado:true, alternativas:candidatos.length};
-  }
-  return {...candidatos[0], confirmado:candidatos.length===1, alternativas:candidatos.length};
+  return achados.filter(s=>s.ncm.length===maisEspecifico);
+}
+
+/* abreviações comuns no cadastro comercial que o anexo escreve por extenso */
+const ABREV = {lt:'lata', lata:'lata', vd:'vidro', vidro:'vidro', pet:'pet', ks:'', cx:'caixa',
+               gfa:'garrafa', gf:'garrafa', dsc:'descartavel', desc:'descartavel', retor:'retornavel'};
+function termosDaDescricao(d){
+  const brutos = norm(d).split(/[^a-z0-9]+/).filter(Boolean);
+  const saida = new Set();
+  brutos.forEach(t=>{ if(ABREV[t]) saida.add(ABREV[t]); if(t.length>=3) saida.add(t); });
+  return [...saida].filter(Boolean);
+}
+
+/* Desempate entre CEST do mesmo NCM:
+   1. descarta o candidato cuja cláusula "exceto ..." alcança o produto
+      (ex.: "Água aromatizada, EXCETO os refrescos e refrigerantes" não serve
+      para um refrigerante);
+   2. pontua pelo número de palavras distintivas que casam com a descrição;
+   3. só confirma quando há um vencedor isolado — senão manda para revisão. */
+function consultarST(ncm, desc){
+  const candidatos = candidatosST(ncm);
+  if(!candidatos.length) return null;
+  if(candidatos.length===1) return {...candidatos[0], confirmado:true, alternativas:1, candidatos};
+
+  const termos = termosDaDescricao(desc);
+  const casa = (palavra, t) => palavra===t || (t.length>=4 && palavra.startsWith(t.slice(0,5))) || (palavra.length>=4 && t.startsWith(palavra.slice(0,5)));
+  const palavrasDe = txt => norm(txt).split(/[^a-z0-9]+/).filter(p=>p.length>=3);
+
+  // 1. cláusula de exceção
+  const viaveis = candidatos.filter(c=>{
+    const m = norm(c.descricao).split(/\bexceto\b/);
+    if(m.length<2) return true;
+    const excecoes = palavrasDe(m.slice(1).join(' ')).filter(p=>!['cest','classificados','descritos','nos','dos'].includes(p) && !/^\d/.test(p));
+    return !excecoes.some(p=>termos.some(t=>casa(p,t)));
+  });
+  const base = viaveis.length? viaveis : candidatos;
+
+  // 2. pontuação pelas palavras que distinguem
+  const conjuntos = base.map(c=>new Set(palavrasDe(c.descricao)));
+  const comuns = [...(conjuntos[0]||[])].filter(p=>conjuntos.every(c=>c.has(p)));
+  const notas = base.map((c,idx)=>{
+    const distintas=[...conjuntos[idx]].filter(p=>!comuns.includes(p));
+    return distintas.filter(p=>termos.some(t=>casa(p,t))).length;
+  });
+  const melhor = Math.max(...notas, 0);
+  const vencedores = base.filter((c,idx)=>notas[idx]===melhor && melhor>0);
+
+  if(vencedores.length===1)
+    return {...vencedores[0], confirmado:true, alternativas:candidatos.length, candidatos};
+
+  // sem vencedor: o próprio anexo traz um código residual ("Demais...", "Outros...")
+  // que é onde cai o que não se encaixa nos específicos
+  const residual = base.find(c=>/^(demais|outros|outras)\b/.test(norm(c.descricao)));
+  return {...(residual || base[0]), confirmado:false, alternativas:candidatos.length,
+          candidatos, motivo: residual? 'sem indicação de embalagem ou tipo na descrição — usei o código residual do anexo' : ''};
 }
 
 /* ============================ MOTOR DE PREENCHIMENTO ============================ */
@@ -413,7 +451,8 @@ function lerArquivo(f){
     HR=0; for(let i=0;i<Math.min(aoa.length,10);i++){ if((aoa[i]||[]).filter(c=>typeof c==='string'&&c.trim()).length>=3){HR=i;break;} }
     HEADERS=(aoa[HR]||[]).map((h,i)=>(h+'').trim()||('Coluna '+XLSX.utils.encode_col(i)));
     await montarMapa();
-    $('p2').hidden=false;
+    $('p2').hidden=false; $('p2').open=true; $('p1').open=false;
+    $('resumoArq').textContent = RAWNAME;
     $('infoArq').textContent = `${aoa.length-HR-1} linhas · ${HEADERS.length} colunas · aba "${SHEET}"`;
     $('mapOrigem').textContent = CLIENTE && MAPA.__salvo ? '— mapeamento salvo deste cliente' : '— detectado automaticamente';
   };
@@ -577,43 +616,6 @@ async function buscarNcm(termo){
   if(error){ toast('Busca indisponível: '+error.message); return []; }
   return data||[];
 }
-async function abrirBuscaNcm(i){
-  const it=ITENS.find(x=>x.i===i); if(!it) return;
-  const termo = prompt('Buscar na nomenclatura oficial — descreva o produto pelo nome genérico\n'
-    + '(a busca é por texto, serve de apoio; a classificação continua sendo sua):', it.desc||'');
-  if(termo===null) return;
-  const cands = await buscarNcm(termo);
-  if(!cands.length){ toast('Nenhum código encontrado para esse termo.'); return; }
-  const linhas = cands.map((c,n)=>`${n+1}) ${c.ncm}${c.residual?' (residual)':''} — ${(c.descricao_item||'').slice(0,60)}\n     ${(c.descricao||'').slice(0,110)}`).join('\n');
-  const esc = prompt('Candidatos encontrados (apoio de busca, não classificação):\n\n'+linhas
-    + '\n\nDigite o número para aplicar ao item, ou cancele para não mudar nada.');
-  const idx = parseInt(esc,10);
-  if(!idx || idx<1 || idx>cands.length) return;
-  const novo = cands[idx-1];
-  it.ncm = novo.ncm; it.ncmStatus='mem'; it.ncmMsg='NCM definido manualmente pelo executor';
-  it.ncmTexto = novo.descricao; it.ncmItem = novo.descricao_item;
-  it.status='mem'; it.porMemoria=USER;
-  await sb.from('memoria_correcao').upsert([{
-    cliente_id: CLIENTE? CLIENTE.id : null, ncm: it.ncm, descricao_norm: norm(it.desc),
-    campo:'ncm', valor: novo.ncm, usuario: USER, origem:'manual'
-  }], {onConflict:'cliente_id,ncm,descricao_norm,campo'});
-  kpis(); tabela(); carregarMemoria();
-  toast(`NCM do item alterado para <b>${novo.ncm}</b> e gravado na memória da equipe.`);
-}
-
-async function aplicarNcmDaMemoria(i){
-  const it=ITENS.find(x=>x.i===i); if(!it||!it.memNcm) return;
-  const novo=it.memNcm.valor;
-  it.ncm=novo; it.ncmStatus='mem'; it.ncmMsg='NCM vindo da memória da equipe';
-  it.status='mem'; it.porMemoria=USER; it.memNcm=null;
-  await sb.from('memoria_correcao').upsert([{cliente_id: CLIENTE? CLIENTE.id : null, ncm:novo,
-    descricao_norm: norm(it.desc), campo:'ncm', valor:novo, usuario:USER, origem:'replicado'}],
-    {onConflict:'cliente_id,ncm,descricao_norm,campo'});
-  await carregarTextosOficiais();
-  kpis(); tabela();
-  toast(`NCM <b>${novo}</b> aplicado a partir da memória da equipe.`);
-}
-
 async function aplicarMemoria(){
   if(!ITENS.length) return;
   const {data} = await sb.from('memoria_correcao').select('*')
@@ -643,66 +645,174 @@ function kpis(){
 }
 $('busca').oninput=()=>tabela();
 
+function chaveItem(it){ return it.sheet? it.sheet+'||'+it.i : String(it.i); }
+
 function tabela(){
   const q=norm($('busca').value);
-  const linhas=ITENS.filter(i=>(FILTRO==='all'||i.status===FILTRO) && (!q || norm(i.desc).includes(q) || i.ncm.includes(q)));
+  const linhas=ITENS.filter(i=>(FILTRO==='all'||i.status===FILTRO) &&
+    (!q || norm(i.desc).includes(q) || i.ncm.includes(q) || (i.cest||'').includes(q)));
   $('infoFiltro').textContent=`${linhas.length} de ${ITENS.length} itens`;
-  const opts = [...META.entries()].map(([k,m])=>`<option value="${k}">${k} · ${esc((m.descricao||'').slice(0,42))}</option>`).join('');
-  $('tbody').innerHTML = linhas.slice(0,600).map(it=>{
+  $('tbody').innerHTML = linhas.slice(0,400).map(it=>{
     const [cl,rot]=SIT[it.status];
-    const msg = [it.ncmMsg, it.nota, it.notaFiscal].filter(Boolean).join(' · ');
-    return `<tr>
-      <td class="mono">${it.i+2+HR}</td>
-      <td>${it.prioritario?'<span class="chip c-rev">alto valor</span> ':''}${esc(it.desc)||'<span class="muted">—</span>'}
-          <div class="muted">${esc(msg)}</div>
-          ${it.memNcm?`<div class="muted memncm">A equipe já usou <b>${esc(it.memNcm.valor)}</b> para produto parecido (${it.memNcm.semelhanca}%), por ${esc(it.memNcm.por)} em ${esc(it.memNcm.quando||'')}
-             <button class="btn link aplicamem" data-m="${it.i}">aplicar</button></div>`:''}</td>
+    const k=chaveItem(it);
+    const msg=[it.ncmMsg,it.nota,it.notaFiscal].filter(Boolean).join(' · ');
+    return `<tr class="${SELECAO.has(k)?'sel':''}">
+      <td class="cbcol"><input type="checkbox" data-k="${esc(k)}" ${SELECAO.has(k)?'checked':''}></td>
+      <td>
+        ${it.prioritario?'<span class="chip c-rev">alto valor</span> ':''}
+        <button class="linkitem" data-abre="${esc(k)}">${esc(it.desc)||'(sem descrição)'}</button>
+        ${msg?`<div class="muted">${esc(msg)}</div>`:''}
+        ${it.memNcm?`<div class="muted memncm">A equipe já usou <b>${esc(it.memNcm.valor)}</b> em produto parecido (${it.memNcm.semelhanca}%)</div>`:''}
+      </td>
       <td class="mono ${it.ncm!==dig(it.ncmOrig)?'fill':''}">${it.ncm||esc(it.ncmOrig)}
-          ${it.ncmItem?`<div class="muted oficial">${esc(it.ncmItem.replace(/<[^>]+>/g,'').slice(0,60))}</div>`:''}</td>
-      <td class="mono ${it.cstSug?'fill':''}">${it.cst}</td>
-      <td class="mono ${it.cfopSSug?'fill':''}">${it.cfopS}</td>
-      <td class="mono ${it.cfopESug?'fill':''}">${it.cfopE}</td>
-      <td class="mono fill">${it.ct}<div class="muted">${esc((it.ctDesc||'').slice(0,40))}</div></td>
-      <td class="mono fill">${it.cstTrib}</td>
-      <td><span class="chip ${cl}">${rot}</span>${it.porMemoria?`<div class="muted">${esc(it.porMemoria)}</div>`:''}</td>
-      <td><select class="mini" data-i="${it.i}"><option value="">— alterar cClassTrib —</option>${opts}</select>
-          <button class="btn link buscancm" data-b="${it.i}">buscar NCM na nomenclatura</button></td>
+        ${it.ncmItem?`<div class="muted oficial">${esc(it.ncmItem.replace(/<[^>]+>/g,'').slice(0,46))}</div>`:''}</td>
+      <td class="mono ${it.cest&&it.cest!==dig(it.cestOrig)?'fill':''}">
+        ${it.cest? esc(it.cest) : '<span class="muted">sem ST</span>'}
+        ${it.st&&it.st.alternativas>1?`<div class="muted">${it.st.alternativas} CEST possíveis</div>`:''}</td>
+      <td class="mono ${it.cstSug?'fill':''}">${esc(it.cst)}</td>
+      <td class="mono ${it.cfopSSug?'fill':''}">${esc(it.cfopS)} · ${esc(it.cfopE)}</td>
+      <td class="mono fill">${esc(it.ct)}
+        <div class="muted">${esc((it.ctDesc||'').slice(0,34))}</div></td>
+      <td><span class="chip ${cl}">${rot}</span>${it.porMemoria?`<div class="muted">${esc((it.porMemoria||'').split('@')[0])}</div>`:''}</td>
     </tr>`;
   }).join('');
-  if(linhas.length>600) $('tbody').innerHTML += `<tr><td colspan="10" class="muted">Exibindo 600 itens do filtro — a exportação inclui todos.</td></tr>`;
-  $('tbody').querySelectorAll('select.mini').forEach(s=>s.onchange=e=>corrigir(+e.target.dataset.i, e.target.value));
-  $('tbody').querySelectorAll('button.buscancm').forEach(b=>b.onclick=()=>abrirBuscaNcm(+b.dataset.b));
-  $('tbody').querySelectorAll('button.aplicamem').forEach(b=>b.onclick=()=>aplicarNcmDaMemoria(+b.dataset.m));
+  if(linhas.length>400) $('tbody').innerHTML += `<tr><td colspan="8" class="muted">Mostrando 400 itens do filtro — use a busca para chegar nos demais. A exportação inclui todos.</td></tr>`;
+  $('tbody').querySelectorAll('button[data-abre]').forEach(b=>b.onclick=()=>abrirPainel(b.dataset.abre));
+  $('tbody').querySelectorAll('input[type=checkbox]').forEach(c=>c.onchange=e=>{
+    e.target.checked ? SELECAO.add(c.dataset.k) : SELECAO.delete(c.dataset.k);
+    atualizarSelecao(); e.target.closest('tr').classList.toggle('sel', e.target.checked);
+  });
 }
+
+function atualizarSelecao(){
+  $('qtdSel').textContent=SELECAO.size;
+  $('barraSel').hidden = SELECAO.size===0;
+}
+$('selTodos').onchange=e=>{
+  const q=norm($('busca').value);
+  const visiveis=ITENS.filter(i=>(FILTRO==='all'||i.status===FILTRO) &&
+    (!q || norm(i.desc).includes(q) || i.ncm.includes(q) || (i.cest||'').includes(q)));
+  if(e.target.checked) visiveis.forEach(i=>SELECAO.add(chaveItem(i)));
+  else visiveis.forEach(i=>SELECAO.delete(chaveItem(i)));
+  atualizarSelecao(); tabela();
+};
+$('btnLimparSel').onclick=()=>{ SELECAO.clear(); $('selTodos').checked=false; atualizarSelecao(); tabela(); };
+
+/* ---------- aplicação em lote ---------- */
+const CAMPO_ITEM = {cclasstrib:'ct', cest:'cest', cst:'cst', cfop_saida:'cfopS', cfop_entrada:'cfopE'};
+async function aplicarEmLote(campo, valor, chaves){
+  const alvos = ITENS.filter(i=>chaves.has(chaveItem(i)));
+  if(!alvos.length || !valor) return 0;
+  const prop = CAMPO_ITEM[campo];
+  const registros=[];
+  alvos.forEach(it=>{
+    it[prop]=valor;
+    if(campo==='cclasstrib'){ const m=META.get(valor)||{}; it.cstTrib=m.cst||it.cstTrib; it.ctDesc=m.descricao||''; it.red=m.reducao||''; }
+    if(campo==='cst') it.cstSug=false;
+    if(campo==='cfop_saida') it.cfopSSug=false;
+    if(campo==='cfop_entrada') it.cfopESug=false;
+    it.status='mem'; it.porMemoria=USER; it.edited=true;
+    registros.push({cliente_id: CLIENTE? CLIENTE.id : null, ncm:it.ncm, descricao_norm:norm(it.desc),
+                    campo, valor, usuario:USER, origem:'manual'});
+  });
+  const {error} = await sb.from('memoria_correcao').upsert(registros, {onConflict:'cliente_id,ncm,descricao_norm,campo'});
+  if(error) toast('Aplicado na tela, mas não gravou na memória: '+error.message);
+  kpis(); tabela(); carregarMemoria();
+  return alvos.length;
+}
+$('btnLote').onclick=async()=>{
+  const campo=$('loteCampo').value, valor=$('loteValor').value.trim();
+  if(!valor){ toast('Informe o valor a aplicar.'); return; }
+  const n=await aplicarEmLote(campo, valor, new Set(SELECAO));
+  $('loteValor').value='';
+  toast(`<b>${n}</b> itens atualizados e gravados na memória da equipe.`);
+};
+
+/* ---------- painel de revisão do item ---------- */
+let ITEM_PAINEL=null, ESCOLHA={ncm:null, cest:null};
+function fecharPainel(){ $('painel').hidden=true; ITEM_PAINEL=null; }
+$('pnFechar').onclick=fecharPainel; $('painelFundo').onclick=fecharPainel;
+document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !$('painel').hidden) fecharPainel(); });
+
+function abrirPainel(chave){
+  const it=ITENS.find(x=>chaveItem(x)===chave); if(!it) return;
+  ITEM_PAINEL=it; ESCOLHA={ncm:null, cest:null};
+  $('pnProduto').textContent=it.desc||'(sem descrição)';
+  $('pnLinha').textContent=`linha ${it.i+2+HR}${it.sheet?' · aba '+it.sheet:''}${it.valor?' · valor '+it.valor.toFixed(2):''}`;
+  $('pnNcm').textContent=it.ncm||'—';
+  $('pnNcmTexto').textContent=(it.ncmTexto||'').replace(/<[^>]+>/g,'').slice(0,180);
+  $('pnBuscaNcm').value=it.desc||'';
+  $('pnOpcoesNcm').innerHTML='';
+  // CEST: todas as opções do anexo para este NCM
+  const cands = candidatosST(it.ncm);
+  $('pnSecaoSt').hidden = false;
+  $('pnStFonte').textContent = cands.length? (cands[0].fundamento||'') : '';
+  $('pnOpcoesSt').innerHTML = cands.length ? cands.map(c=>`
+      <button class="opcao ${c.cest===it.cest?'escolhida':''}" data-cest="${esc(c.cest)}">
+        <span class="cod">${esc(c.cest)}</span>
+        <span class="txt">${esc(c.descricao)}</span></button>`).join('')
+    : '<div class="muted">Este NCM não consta no anexo de substituição tributária da UF.</div>';
+  $('pnOpcoesSt').querySelectorAll('button[data-cest]').forEach(b=>b.onclick=()=>{
+    ESCOLHA.cest=b.dataset.cest;
+    $('pnOpcoesSt').querySelectorAll('.opcao').forEach(o=>o.classList.remove('escolhida'));
+    b.classList.add('escolhida');
+  });
+  // cClassTrib
+  $('pnCt').innerHTML=[...META.entries()].map(([k,m])=>
+    `<option value="${k}" ${k===it.ct?'selected':''}>${k} · ${esc((m.descricao||'').slice(0,46))}</option>`).join('');
+  $('pnCtNota').textContent=it.nota||'';
+  $('pnCst').value=it.cst||''; $('pnCfopS').value=it.cfopS||''; $('pnCfopE').value=it.cfopE||'';
+  $('pnEscopo').value = SELECAO.size? 'selecao' : 'produto';
+  $('painel').hidden=false;
+}
+
+$('pnBuscarNcm').onclick=async()=>{
+  const termo=$('pnBuscaNcm').value.trim(); if(!termo) return;
+  $('pnOpcoesNcm').innerHTML='<div class="muted">buscando…</div>';
+  const cands=await buscarNcm(termo);
+  $('pnOpcoesNcm').innerHTML = cands.length ? cands.map(c=>`
+      <button class="opcao" data-ncm="${esc(c.ncm)}">
+        <span class="cod">${esc(c.ncm)}${c.residual?' ⚠':''}</span>
+        <span class="txt"><b>${esc((c.descricao_item||'').replace(/<[^>]+>/g,'').slice(0,60))}</b><br>
+          ${esc((c.descricao||'').replace(/<[^>]+>/g,'').slice(0,130))}</span></button>`).join('')
+    : '<div class="muted">Nenhum código encontrado. A busca é por texto da nomenclatura e não substitui as regras de classificação.</div>';
+  $('pnOpcoesNcm').querySelectorAll('button[data-ncm]').forEach(b=>b.onclick=()=>{
+    ESCOLHA.ncm=b.dataset.ncm;
+    $('pnOpcoesNcm').querySelectorAll('.opcao').forEach(o=>o.classList.remove('escolhida'));
+    b.classList.add('escolhida');
+  });
+};
+$('pnBuscaNcm').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); $('pnBuscarNcm').click(); }});
+
+$('pnAplicar').onclick=async()=>{
+  const it=ITEM_PAINEL; if(!it) return;
+  const escopo=$('pnEscopo').value;
+  let chaves=new Set();
+  if(escopo==='item') chaves.add(chaveItem(it));
+  else if(escopo==='produto') ITENS.filter(x=>x.ncm===it.ncm && norm(x.desc)===norm(it.desc)).forEach(x=>chaves.add(chaveItem(x)));
+  else if(escopo==='ncm') ITENS.filter(x=>x.ncm===it.ncm).forEach(x=>chaves.add(chaveItem(x)));
+  else chaves=new Set(SELECAO.size? SELECAO : [chaveItem(it)]);
+
+  let total=0;
+  if(ESCOLHA.ncm && ESCOLHA.ncm!==it.ncm){
+    const alvos=ITENS.filter(x=>chaves.has(chaveItem(x)));
+    alvos.forEach(x=>{ x.ncm=ESCOLHA.ncm; x.ncmStatus='mem'; x.ncmMsg='NCM definido no painel de revisão';
+      x.st=consultarST(x.ncm,x.desc); x.cest=x.st?x.st.cest:''; x.status='mem'; x.porMemoria=USER; });
+    await sb.from('memoria_correcao').upsert(alvos.map(x=>({cliente_id:CLIENTE?CLIENTE.id:null, ncm:x.ncm,
+      descricao_norm:norm(x.desc), campo:'ncm', valor:ESCOLHA.ncm, usuario:USER, origem:'manual'})),
+      {onConflict:'cliente_id,ncm,descricao_norm,campo'});
+    await carregarTextosOficiais(); total=alvos.length;
+  }
+  if(ESCOLHA.cest) total=Math.max(total, await aplicarEmLote('cest', ESCOLHA.cest, chaves));
+  if($('pnCt').value!==it.ct) total=Math.max(total, await aplicarEmLote('cclasstrib', $('pnCt').value, chaves));
+  if($('pnCst').value!==it.cst) total=Math.max(total, await aplicarEmLote('cst', $('pnCst').value.trim(), chaves));
+  if($('pnCfopS').value!==it.cfopS) total=Math.max(total, await aplicarEmLote('cfop_saida', $('pnCfopS').value.trim(), chaves));
+  if($('pnCfopE').value!==it.cfopE) total=Math.max(total, await aplicarEmLote('cfop_entrada', $('pnCfopE').value.trim(), chaves));
+  fecharPainel(); kpis(); tabela();
+  toast(total? `<b>${total}</b> item(ns) atualizado(s) e gravados na memória.` : 'Nada foi alterado.');
+};
 
 /* correção manual + replicação (mesmo NCM + mesma descrição, e mesma regra de enquadramento) */
-async function corrigir(i, ct){
-  if(!ct) return;
-  const alvo=ITENS.find(x=>x.i===i); if(!alvo) return;
-  const m=META.get(ct)||{};
-  const aplica=(it,origem)=>{ it.ct=ct; it.cstTrib=m.cst||it.cstTrib; it.ctDesc=m.descricao||''; it.red=m.reducao||'';
-    it.status='mem'; it.porMemoria=USER; it.origem=origem; };
-  aplica(alvo,'manual');
-  const regraAlvo=alvo.regra, dA=norm(alvo.desc);
-  let repl=0;
-  const grava=[];
-  ITENS.forEach(it=>{
-    if(it===alvo) return;
-    const mesmoProduto = it.ncm===alvo.ncm && norm(it.desc)===dA;
-    const mesmaRegra   = regraAlvo!=='—' && it.regra===regraAlvo && it.status!=='mem';
-    if(mesmoProduto||mesmaRegra){ aplica(it,'replicado'); repl++; }
-  });
-  [alvo,...ITENS.filter(x=>x.origem==='replicado')].forEach(it=>grava.push({
-    cliente_id: CLIENTE? CLIENTE.id : null, ncm: it.ncm, descricao_norm: norm(it.desc),
-    campo:'cclasstrib', valor: ct, usuario: USER, origem: it.origem||'manual', fundamento_ref: it.regra
-  }));
-  kpis(); tabela();
-  const {error} = await sb.from('memoria_correcao').upsert(grava, {onConflict:'cliente_id,ncm,descricao_norm,campo'});
-  toast(error ? 'Correção aplicada na tela, mas não gravou no banco: '+error.message
-              : `Correção <b>${ct}</b> gravada${repl?` e replicada em <b>${repl}</b> itens`:''}. Vale para as próximas planilhas.`);
-  carregarMemoria();
-}
-
 /* ============================ EXPORTAÇÃO (preserva formatação) ============================ */
 const colL = n => { let s=''; n++; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=(n-1-m)/26; } return s; };
 const colI = ref => { let n=0; for(const ch of ref.replace(/\d+/g,'')) n=n*26+(ch.charCodeAt(0)-64); return n-1; };

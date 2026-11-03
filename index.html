@@ -80,46 +80,66 @@
   <main>
     <!-- ---------- TELA 1 · PREENCHER ---------- -->
     <section class="tela on" id="tela-preencher">
-      <header class="ph">
+      <header class="ph compacta">
         <div>
           <h1>Preencher cadastro de produtos</h1>
-          <p>Suba a planilha do cliente. O sistema preenche cClassTrib, CST, CFOP e alíquotas pelo cruzamento NCM × descrição, e marca o que precisa de revisão.</p>
+          <p id="subPreencher">Suba a planilha do cliente. O sistema preenche pelo cruzamento NCM × descrição com a TIPI, os anexos da LC 214/2025 e o anexo de ST da UF.</p>
         </div>
         <select id="selCliente" class="clientepick"><option value="">— selecione o cliente —</option></select>
       </header>
 
-      <div class="passo" id="p1">
+      <!-- passos 1 e 2 recolhem sozinhos depois do processamento -->
+      <details class="passo dobra" id="p1" open>
+        <summary><b>1</b> Arquivo <span class="resumo" id="resumoArq"></span></summary>
         <div class="drop" id="drop">
           <strong>Arraste a planilha ou clique para selecionar</strong>
           <span>.xlsx, .xlsm ou .csv — a formatação original é preservada na exportação</span>
         </div>
         <input type="file" id="file" accept=".xlsx,.xlsm,.csv" hidden>
-      </div>
+      </details>
 
-      <div class="passo" id="p2" hidden>
-        <h2>Mapeamento de colunas <small id="mapOrigem"></small></h2>
+      <details class="passo dobra" id="p2" hidden>
+        <summary><b>2</b> Mapeamento de colunas <span class="resumo" id="mapOrigem"></span></summary>
         <div class="grid" id="mapGrid"></div>
         <div class="bar">
           <button class="btn primary" id="btnRodar">Preencher planilha</button>
           <button class="btn quiet" id="btnSalvarMapa">Salvar mapeamento deste cliente</button>
           <span class="muted" id="infoArq"></span>
         </div>
-      </div>
+      </details>
 
-      <div class="passo" id="p3" hidden>
+      <div id="p3" hidden>
         <div class="kpis" id="kpis"></div>
-        <div class="bar">
-          <input type="search" id="busca" placeholder="Buscar produto ou NCM…">
+
+        <div class="barra-fixa">
+          <input type="search" id="busca" placeholder="Buscar produto, NCM ou CEST…">
           <span class="muted" id="infoFiltro"></span>
           <span class="spacer"></span>
-          <button class="btn primary" id="btnExportar">Baixar planilha preenchida</button>
           <button class="btn quiet" id="btnCsv">Relatório (.csv)</button>
+          <button class="btn primary" id="btnExportar">Baixar planilha preenchida</button>
         </div>
+
+        <div class="barra-selecao" id="barraSel" hidden>
+          <span><b id="qtdSel">0</b> itens selecionados</span>
+          <span class="spacer"></span>
+          <select id="loteCampo">
+            <option value="cclasstrib">cClassTrib</option>
+            <option value="cest">CEST</option>
+            <option value="cst">CSOSN/CST</option>
+            <option value="cfop_saida">CFOP saída</option>
+            <option value="cfop_entrada">CFOP entrada</option>
+          </select>
+          <input type="text" id="loteValor" placeholder="valor a aplicar" class="mono">
+          <button class="btn primary" id="btnLote">Aplicar aos selecionados</button>
+          <button class="btn link" id="btnLimparSel">limpar seleção</button>
+        </div>
+
         <div class="tabwrap">
           <table id="tbl">
             <thead><tr>
-              <th>#</th><th>Produto</th><th>NCM</th><th>CSOSN/CST</th><th>CFOP saída</th><th>CFOP entrada</th>
-              <th>cClassTrib</th><th>CST IBS/CBS</th><th>Situação</th><th>Ajuste</th>
+              <th class="cbcol"><input type="checkbox" id="selTodos" title="selecionar tudo que está filtrado"></th>
+              <th>Produto</th><th>NCM</th><th>CEST / ST</th><th>CSOSN/CST</th>
+              <th>CFOP<br>saída · entrada</th><th>cClassTrib</th><th>Situação</th>
             </tr></thead>
             <tbody id="tbody"></tbody>
           </table>
@@ -250,6 +270,61 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ================== PAINEL DE REVISÃO DO ITEM ================== -->
+<div id="painel" hidden>
+  <div class="painel-fundo" id="painelFundo"></div>
+  <aside class="painel-corpo">
+    <header>
+      <div>
+        <h2 id="pnProduto">—</h2>
+        <p class="muted" id="pnLinha"></p>
+      </div>
+      <button class="btn link" id="pnFechar">fechar</button>
+    </header>
+
+    <section>
+      <h3>NCM</h3>
+      <div class="pn-atual"><span class="mono" id="pnNcm">—</span><span class="muted" id="pnNcmTexto"></span></div>
+      <div class="bar">
+        <input type="search" id="pnBuscaNcm" placeholder="buscar na nomenclatura oficial…">
+        <button class="btn quiet" id="pnBuscarNcm">buscar</button>
+      </div>
+      <div class="opcoes" id="pnOpcoesNcm"></div>
+    </section>
+
+    <section id="pnSecaoSt">
+      <h3>CEST e substituição tributária <span class="muted" id="pnStFonte"></span></h3>
+      <div class="opcoes" id="pnOpcoesSt"></div>
+    </section>
+
+    <section>
+      <h3>cClassTrib — IBS e CBS</h3>
+      <select id="pnCt"></select>
+      <div class="muted" id="pnCtNota"></div>
+    </section>
+
+    <section>
+      <h3>ICMS e CFOP</h3>
+      <div class="grid">
+        <div><label class="f">CSOSN/CST</label><input type="text" id="pnCst" class="mono"></div>
+        <div><label class="f">CFOP saída</label><input type="text" id="pnCfopS" class="mono"></div>
+        <div><label class="f">CFOP entrada</label><input type="text" id="pnCfopE" class="mono"></div>
+      </div>
+    </section>
+
+    <footer>
+      <label class="f">Aplicar a</label>
+      <select id="pnEscopo">
+        <option value="item">somente este item</option>
+        <option value="produto" selected>este produto (mesmo NCM e descrição)</option>
+        <option value="ncm">todos os itens com este NCM</option>
+        <option value="selecao">os itens selecionados na lista</option>
+      </select>
+      <button class="btn primary w100" id="pnAplicar">Aplicar</button>
+    </footer>
+  </aside>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>

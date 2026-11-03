@@ -154,3 +154,51 @@ td select.mini{min-width:150px;padding:4px 6px;font-size:12.5px}
   .navitem{width:auto}
   main{padding:18px 16px 60px}
 }
+
+/* ======================= fluxo compacto ======================= */
+.ph.compacta{padding-bottom:10px;margin-bottom:12px}
+.passo.dobra{padding:0}
+.passo.dobra > summary{list-style:none;cursor:pointer;padding:13px 18px;display:flex;align-items:center;gap:9px;
+  font:600 14px "IBM Plex Sans"}
+.passo.dobra > summary::-webkit-details-marker{display:none}
+.passo.dobra > summary b{width:19px;height:19px;border-radius:5px;background:var(--accent-2);color:var(--accent-ink);
+  display:grid;place-items:center;font:600 11px "IBM Plex Mono"}
+.passo.dobra > summary::after{content:"▾";margin-left:auto;color:var(--ink2);font-size:12px}
+.passo.dobra[open] > summary::after{content:"▴"}
+.passo.dobra > summary .resumo{font-weight:400;font-size:12.5px;color:var(--ink2)}
+.passo.dobra > *:not(summary){margin:0 18px 18px}
+
+.barra-fixa{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  background:var(--paper);padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:0}
+.barra-selecao{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--accent-2);
+  border:1px solid var(--accent);border-radius:8px;padding:9px 12px;margin:10px 0;font-size:13px}
+.barra-selecao select,.barra-selecao input{width:auto;min-width:140px;padding:6px 8px}
+.cbcol{width:34px}
+#tbl td.cbcol{text-align:center}
+#tbl input[type=checkbox]{width:auto;margin:0}
+tr.sel td{background:var(--accent-2)!important}
+.linkitem{background:none;border:none;color:var(--accent);font:600 13px "IBM Plex Sans";cursor:pointer;
+  text-align:left;padding:0;text-decoration:underline}
+
+/* ======================= painel lateral ======================= */
+#painel{position:fixed;inset:0;z-index:40}
+#painel[hidden]{display:none!important}
+.painel-fundo{position:absolute;inset:0;background:rgba(21,33,28,.35)}
+.painel-corpo{position:absolute;top:0;right:0;height:100%;width:min(520px,94vw);background:var(--surface);
+  border-left:1px solid var(--line);box-shadow:-10px 0 40px rgba(0,0,0,.12);overflow:auto;padding:0 0 20px}
+.painel-corpo header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;
+  padding:18px 20px;border-bottom:2px solid var(--ink);position:sticky;top:0;background:var(--surface);z-index:2}
+.painel-corpo h2{font-size:16px;margin:0}
+.painel-corpo h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink2);margin:0 0 8px}
+.painel-corpo section{padding:16px 20px;border-bottom:1px solid var(--line)}
+.painel-corpo footer{padding:16px 20px;position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--line)}
+.pn-atual{display:flex;flex-direction:column;gap:3px;margin-bottom:10px}
+.pn-atual .mono{font-size:15px;font-weight:600}
+.opcoes{display:flex;flex-direction:column;gap:6px;margin-top:10px;max-height:260px;overflow:auto}
+.opcao{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;
+  padding:9px 11px;cursor:pointer;background:#fff;text-align:left;width:100%;font:13px "IBM Plex Sans"}
+.opcao:hover{border-color:var(--accent);background:var(--accent-2)}
+.opcao.escolhida{border-color:var(--accent);background:var(--accent-2);box-shadow:inset 3px 0 0 var(--accent)}
+.opcao .cod{font-family:"IBM Plex Mono",monospace;font-weight:600;white-space:nowrap}
+.opcao .txt{color:var(--ink2);font-size:12.5px}
+:root[data-theme="dark"] .opcao{background:var(--surface)}
