@@ -61,17 +61,51 @@ sb.auth.onAuthStateChange((evt, session)=>{
 });
 $('btnSair').onclick = async ()=>{ await sb.auth.signOut(); location.reload(); };
 
+/* Camada 2 de segurança: além do domínio, o cadastro precisa estar aprovado por
+   um administrador. O primeiro acesso do domínio assume o papel de admin. */
+const SIT_ACESSO = {
+  pendente:['Cadastro aguardando aprovação','Seu pedido foi registrado e está na fila do administrador do portal. Você recebe acesso assim que ele aprovar.'],
+  negado:  ['Acesso negado','O administrador do portal não autorizou este cadastro. Fale com ele se achar que houve engano.'],
+  suspenso:['Acesso suspenso','Este cadastro foi suspenso pelo administrador do portal.']
+};
+async function verificarAprovacao(origem){
+  const {data, error} = await sb.rpc('solicitar_acesso',
+    {p_nome: null, p_origem: origem || 'senha'});
+  if(error) return {ok:false, erro:error.message};
+  const linha = Array.isArray(data)? data[0] : data;
+  return {ok: linha && linha.status==='aprovado', linha};
+}
+function mostrarEspera(status){
+  const [titulo, texto] = SIT_ACESSO[status] || SIT_ACESSO.pendente;
+  $('gate').hidden=true; $('app').hidden=true; $('espera').hidden=false;
+  $('esperaTitulo').textContent = titulo;
+  $('esperaTexto').textContent = texto;
+}
+$('esperaAtualizar').onclick = ()=>entrar();
+$('esperaSair').onclick = async ()=>{ await sb.auth.signOut(); location.reload(); };
+
+let EH_ADMIN=false;
 async function entrar(){
   const {data:{user}} = await sb.auth.getUser();
   if(!user){ return; }
   if(!user.email || !user.email.endsWith(DOMINIO)){        // vale também para a volta do Google
     await sb.auth.signOut();
-    $('gate').hidden=false; $('app').hidden=true;
+    $('gate').hidden=false; $('app').hidden=true; $('espera').hidden=true;
     $('gErr').textContent='Esta conta Google não pertence ao domínio autorizado.';
     return;
   }
+  const origem = (user.app_metadata && user.app_metadata.provider) || 'senha';
+  const ap = await verificarAprovacao(origem==='email'?'senha':origem);
+  if(!ap.ok){
+    if(ap.erro){ $('gate').hidden=false; $('gErr').textContent='Não foi possível verificar seu acesso: '+ap.erro; return; }
+    mostrarEspera(ap.linha? ap.linha.status : 'pendente');
+    return;
+  }
+  EH_ADMIN = ap.linha && ap.linha.papel==='admin';
   USER=user.email;
+  $('espera').hidden=true;
   $('gate').hidden=true; $('app').hidden=false;
+  $('navAcessos').hidden = !EH_ADMIN;
   const [u,d]=USER.split('@');
   $('whoami').textContent = u+'@'+d.slice(0,2)+'•'.repeat(Math.max(3,d.length-6))+d.slice(-7);
   await Promise.all([carregarBase(), carregarClientes()]);
@@ -86,7 +120,42 @@ document.querySelectorAll('.navitem').forEach(b=>b.onclick=()=>{
   b.classList.add('on'); $('tela-'+b.dataset.tela).classList.add('on');
   if(b.dataset.tela==='atualizacoes') carregarAtos();
   if(b.dataset.tela==='base'){ carregarMemoria(); kpisBase(); }
+  if(b.dataset.tela==='acessos') carregarAcessos();
 });
+
+/* ============================ ACESSOS (administrador) ============================ */
+$('btnRecarregarAcessos').onclick = ()=>carregarAcessos();
+const SIT_CHIP = {aprovado:'c-ok', pendente:'c-rev', negado:'c-err', suspenso:'c-intg'};
+async function carregarAcessos(){
+  const {data, error} = await sb.from('usuario_acesso').select('*').order('solicitado_em',{ascending:false});
+  if(error){ $('tbAcessos').innerHTML=`<tr><td colspan="7" class="muted">${esc(error.message)}</td></tr>`; return; }
+  const linhas = data||[];
+  const c = {total:linhas.length, pendente:0, aprovado:0, negado:0};
+  linhas.forEach(l=>{ if(c[l.status]!==undefined) c[l.status]++; });
+  $('kpisAcessos').innerHTML = [['k-all',c.total,'Cadastros'],['k-rev',c.pendente,'Aguardando você'],
+    ['k-ok',c.aprovado,'Aprovados'],['k-err',c.negado,'Negados']]
+    .map(([cl,v,l])=>`<button class="kpi ${cl}" disabled><div class="v">${v}</div><div class="l">${l}</div></button>`).join('');
+  $('tbAcessos').innerHTML = linhas.length ? linhas.map(l=>`<tr>
+      <td class="mono">${esc(l.email)}</td>
+      <td class="muted">${esc(l.origem_login||'—')}</td>
+      <td class="mono">${(l.solicitado_em||'').slice(0,10)}</td>
+      <td><span class="chip ${SIT_CHIP[l.status]||'c-intg'}">${esc(l.status)}</span></td>
+      <td>${l.papel==='admin'?'<span class="chip c-mem">admin</span>':'usuário'}</td>
+      <td class="muted">${esc((l.decidido_por||'').split('@')[0]||'—')}</td>
+      <td>${l.email===USER ? '<span class="muted">você</span>' : `
+        ${l.status!=='aprovado'?`<button class="btn quiet" data-ok="${esc(l.email)}">Aprovar</button>`:''}
+        ${l.status!=='negado'  ?`<button class="btn link" data-no="${esc(l.email)}">Negar</button>`:''}`}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">Nenhum pedido de cadastro ainda.</td></tr>';
+  $('tbAcessos').querySelectorAll('button[data-ok]').forEach(b=>b.onclick=()=>decidir(b.dataset.ok,'aprovado'));
+  $('tbAcessos').querySelectorAll('button[data-no]').forEach(b=>b.onclick=()=>decidir(b.dataset.no,'negado'));
+}
+async function decidir(email, status){
+  const {error} = await sb.rpc('decidir_acesso', {p_email:email, p_status:status, p_papel:null});
+  toast(error ? 'Não foi possível decidir: '+error.message
+              : `Cadastro de <b>${esc(email)}</b> ${status==='aprovado'?'aprovado':'negado'}.`);
+  carregarAcessos();
+}
 
 /* ============================ BASE DE REFERÊNCIA ============================ */
 async function carregarBase(){

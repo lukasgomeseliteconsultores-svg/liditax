@@ -30,6 +30,19 @@
   </form>
 </div>
 
+<!-- ================== AGUARDANDO APROVAÇÃO ================== -->
+<div id="espera" hidden>
+  <div class="gatecard">
+    <div class="logo">MIX<span>FISCAL</span></div>
+    <h2 id="esperaTitulo">Cadastro aguardando aprovação</h2>
+    <p class="sub" id="esperaTexto"></p>
+    <div class="bar">
+      <button class="btn quiet" id="esperaAtualizar">Verificar de novo</button>
+      <button class="btn link" id="esperaSair">sair</button>
+    </div>
+  </div>
+</div>
+
 <!-- ======================= APP ======================= -->
 <div id="app" hidden>
   <aside class="nav">
@@ -39,6 +52,7 @@
       <button class="navitem" data-tela="clientes"><b>2</b> Clientes</button>
       <button class="navitem" data-tela="atualizacoes"><b>3</b> Atualizações</button>
       <button class="navitem" data-tela="base"><b>4</b> Base e memória</button>
+      <button class="navitem" data-tela="acessos" id="navAcessos" hidden><b>★</b> Acessos</button>
     </nav>
     <div class="navfoot">
       <div class="who" id="whoami">—</div>
@@ -171,6 +185,21 @@
           <table><thead><tr><th>NCM</th><th>Produto</th><th>Campo</th><th>Valor</th><th>Quem</th><th>Quando</th></tr></thead>
           <tbody id="tbMemoria"></tbody></table>
         </div>
+      </div>
+    </section>
+    <!-- ---------- TELA 5 · ACESSOS (só administrador) ---------- -->
+    <section class="tela" id="tela-acessos">
+      <header class="ph">
+        <div>
+          <h1>Acessos à plataforma</h1>
+          <p>Todo pedido de cadastro cai aqui. Só entra quem você aprovar — e mesmo aprovado, o e-mail precisa ser do domínio do escritório.</p>
+        </div>
+        <button class="btn quiet" id="btnRecarregarAcessos">Recarregar</button>
+      </header>
+      <div class="kpis" id="kpisAcessos"></div>
+      <div class="tabwrap">
+        <table><thead><tr><th>E-mail</th><th>Entrada por</th><th>Pedido em</th><th>Situação</th><th>Papel</th><th>Decidido por</th><th>Ação</th></tr></thead>
+        <tbody id="tbAcessos"></tbody></table>
       </div>
     </section>
   </main>
