@@ -140,7 +140,61 @@ document.querySelectorAll('.navitem').forEach(b=>b.onclick=()=>{
   if(b.dataset.tela==='atualizacoes') carregarAtos();
   if(b.dataset.tela==='base'){ carregarMemoria(); kpisBase(); }
   if(b.dataset.tela==='acessos') carregarAcessos();
+  if(b.dataset.tela==='diagnostico') montarDiagnostico();
 });
+
+/* ============================ DIAGNÓSTICO POR NCM ============================ */
+const raizDesc = d => norm(d).split(/\s+/).filter(p=>p.length>=4).slice(0,2).join(' ');
+/* para divergência, o substantivo inicial basta: "queijo", "pao", "arroz" */
+const VAZIAS=new Set(['para','com','sem','dos','das','por','tipo','und','kit']);
+const nucleoDesc = d => (norm(d).split(/\s+/).find(p=>p.length>=3 && !VAZIAS.has(p)) || '');
+
+function montarDiagnostico(){
+  if(!ITENS.length){
+    $('kpisDiag').innerHTML='';
+    $('tbDiagNcm').innerHTML='<tr><td colspan="4" class="muted">Processe uma planilha na tela 1 para ver o diagnóstico.</td></tr>';
+    $('tbDiagDiv').innerHTML='<tr><td colspan="3" class="muted">—</td></tr>';
+    return;
+  }
+  // um NCM servindo a muitos produtos distintos
+  const porNcm=new Map();
+  ITENS.forEach(i=>{ if(!porNcm.has(i.ncm)) porNcm.set(i.ncm,[]); porNcm.get(i.ncm).push(i); });
+  const suspeitos=[...porNcm.entries()]
+    .map(([ncm,lista])=>({ncm, lista, raizes:new Set(lista.map(x=>raizDesc(x.desc))).size}))
+    .filter(x=>x.lista.length>=4 && x.raizes>=3)
+    .sort((a,b)=>b.raizes-a.raizes);
+
+  // produtos parecidos com códigos diferentes
+  // divergência real: mesma palavra-núcleo caindo em POSIÇÕES diferentes (4 dígitos)
+  const porRaiz=new Map();
+  ITENS.forEach(i=>{ const r=nucleoDesc(i.desc); if(!r||!i.ncm) return;
+    if(!porRaiz.has(r)) porRaiz.set(r,new Map());
+    const m=porRaiz.get(r); m.set(i.ncm,(m.get(i.ncm)||0)+1); });
+  const divergentes=[...porRaiz.entries()]
+    .filter(([,m])=>new Set([...m.keys()].map(c=>c.slice(0,4))).size>1)
+    .map(([raiz,m])=>({raiz, codigos:[...m.entries()].sort((a,b)=>b[1]-a[1]), itens:[...m.values()].reduce((a,b)=>a+b,0)}))
+    .sort((a,b)=>b.codigos.length-a.codigos.length).slice(0,40);
+
+  const residuais = ITENS.filter(i=>/residual/i.test(i.ncmMsg||'')).length;
+  const invalidos = ITENS.filter(i=>i.ncmStatus==='err').length;
+  $('kpisDiag').innerHTML=[['k-all',ITENS.length,'Itens'],['k-err',invalidos,'NCM inválido'],
+    ['k-rev',residuais,'Código residual'],['k-60',suspeitos.length,'NCM genérico'],
+    ['k-mem',divergentes.length,'Produtos divergentes']]
+    .map(([c,v,l])=>`<button class="kpi ${c}" disabled><div class="v">${v}</div><div class="l">${l}</div></button>`).join('');
+
+  $('tbDiagNcm').innerHTML = suspeitos.length ? suspeitos.slice(0,30).map(x=>`<tr>
+      <td class="mono">${esc(x.ncm)}</td>
+      <td class="mono">${x.lista.length}<div class="muted">${x.raizes} produtos distintos</div></td>
+      <td class="muted">${esc((x.lista[0].ncmItem||'').replace(/<[^>]+>/g,'').slice(0,54))}</td>
+      <td class="muted">${esc(x.lista.slice(0,4).map(i=>i.desc.slice(0,24)).join(' · '))}</td>
+    </tr>`).join('') : '<tr><td colspan="4" class="muted">Nenhum NCM concentrando produtos heterogêneos.</td></tr>';
+
+  $('tbDiagDiv').innerHTML = divergentes.length ? divergentes.map(d=>`<tr>
+      <td>${esc(d.raiz)}</td>
+      <td class="mono">${d.codigos.map(([c,q])=>esc(c)+' ('+q+')').join('  ·  ')}</td>
+      <td class="mono">${d.itens}</td>
+    </tr>`).join('') : '<tr><td colspan="3" class="muted">Nenhuma divergência encontrada.</td></tr>';
+}
 
 /* ============================ ACESSOS (administrador) ============================ */
 $('btnRecarregarAcessos').onclick = ()=>carregarAcessos();
@@ -329,6 +383,7 @@ const CAMPOS = [
   ['desc',  'Descrição do produto', ['produto','descricao','descrição','item','mercadoria']],
   ['ncm',   'NCM',                  ['ncm']],
   ['cest',  'CEST',                 ['cest']],
+  ['valor', 'Valor de venda',       ['valor','preco','preço','venda']],
   ['cst',   'CST/CSOSN ICMS',       ['cst/csosn','csosn','cst icms']],
   ['aliq',  'Alíquota ICMS',        ['aliquota icms','alíquota icms']],
   ['cfopS', 'CFOP saída',           ['cfop saida','cfop saída']],
@@ -391,7 +446,9 @@ $('btnRodar').onclick = ()=>{
       ncm: v.ncm, ncmStatus: v.status, ncmMsg: v.msg,
       cestOrig: MAPA.cest!=='' ? (r[MAPA.cest]+'').trim() : '',
       cstOrig:  MAPA.cst!==''  ? (r[MAPA.cst]+'').trim()  : '',
-      cfopSOrig:MAPA.cfopS!==''? (r[MAPA.cfopS]+'').trim(): ''
+      cfopSOrig:MAPA.cfopS!==''? (r[MAPA.cfopS]+'').trim(): '',
+      valor: MAPA.valor!=='' && MAPA.valor!==undefined
+             ? parseFloat((r[MAPA.valor]+'').replace(/\./g,'').replace(',','.'))||0 : 0
     };
     const a = classificarIbsCbs(item.ncm, item.desc);
     item.ct=a.ct; item.cstTrib=a.cst; item.ctDesc=a.desc; item.red=a.red; item.regra=a.regra;
@@ -406,10 +463,21 @@ $('btnRodar').onclick = ()=>{
     ITENS.push(item);
   });
   detectarNcmGenerico(ITENS);
-  carregarTextosOficiais().then(aplicarMemoria).then(()=>{ $('p3').hidden=false; FILTRO='all'; kpis(); tabela();
+  marcarPrioridade(ITENS);
+  carregarTextosOficiais().then(aplicarMemoria).then(consultarMemoriaNcm).then(()=>{ $('p3').hidden=false; FILTRO='all'; kpis(); tabela();
     $('p3').scrollIntoView({behavior:'smooth'});
     toast(`<b>${ITENS.length}</b> itens processados. ${ITENS.filter(i=>i.status!=='ok').length} precisam de conferência.`); });
 };
+
+/* Prioridade: a auditoria de NCM recomenda atacar primeiro o que tem maior
+   impacto financeiro. Marca o terço superior por valor entre os itens que
+   precisam de conferência. */
+function marcarPrioridade(itens){
+  const comValor = itens.filter(i=>i.valor>0).map(i=>i.valor).sort((a,b)=>b-a);
+  if(comValor.length<6) return;
+  const corte = comValor[Math.floor(comValor.length*0.2)];
+  itens.forEach(i=>{ i.prioritario = i.valor>0 && i.valor>=corte; });
+}
 
 /* Traz o texto oficial da nomenclatura para cada NCM da planilha. É com ele
    que a pessoa compara a descrição do produto — o método que a própria
@@ -426,6 +494,20 @@ async function carregarTextosOficiais(){
         it.ipi      = r.aliquota_ipi || '';
       });
     });
+  }
+}
+
+/* A equipe já decidiu este produto antes? Procura por descrição parecida em
+   qualquer cliente. É a correlação que melhora com o uso. */
+async function consultarMemoriaNcm(){
+  const alvos = ITENS.filter(i=>i.status!=='ok' && i.desc).slice(0,120);
+  for(const it of alvos){
+    const {data} = await sb.rpc('sugerir_por_memoria', {p_descricao:it.desc, p_campo:'ncm', p_limite:1});
+    const m = (data||[])[0];
+    if(m && m.valor && m.valor!==it.ncm){
+      it.memNcm = {valor:m.valor, por:(m.usuario||'').split('@')[0], quando:m.quando,
+                   semelhanca:Math.round((m.semelhanca||0)*100)};
+    }
   }
 }
 
@@ -457,6 +539,19 @@ async function abrirBuscaNcm(i){
   }], {onConflict:'cliente_id,ncm,descricao_norm,campo'});
   kpis(); tabela(); carregarMemoria();
   toast(`NCM do item alterado para <b>${novo.ncm}</b> e gravado na memória da equipe.`);
+}
+
+async function aplicarNcmDaMemoria(i){
+  const it=ITENS.find(x=>x.i===i); if(!it||!it.memNcm) return;
+  const novo=it.memNcm.valor;
+  it.ncm=novo; it.ncmStatus='mem'; it.ncmMsg='NCM vindo da memória da equipe';
+  it.status='mem'; it.porMemoria=USER; it.memNcm=null;
+  await sb.from('memoria_correcao').upsert([{cliente_id: CLIENTE? CLIENTE.id : null, ncm:novo,
+    descricao_norm: norm(it.desc), campo:'ncm', valor:novo, usuario:USER, origem:'replicado'}],
+    {onConflict:'cliente_id,ncm,descricao_norm,campo'});
+  await carregarTextosOficiais();
+  kpis(); tabela();
+  toast(`NCM <b>${novo}</b> aplicado a partir da memória da equipe.`);
 }
 
 async function aplicarMemoria(){
@@ -498,7 +593,10 @@ function tabela(){
     const msg = [it.ncmMsg, it.nota, it.notaFiscal].filter(Boolean).join(' · ');
     return `<tr>
       <td class="mono">${it.i+2+HR}</td>
-      <td>${esc(it.desc)||'<span class="muted">—</span>'}<div class="muted">${esc(msg)}</div></td>
+      <td>${it.prioritario?'<span class="chip c-rev">alto valor</span> ':''}${esc(it.desc)||'<span class="muted">—</span>'}
+          <div class="muted">${esc(msg)}</div>
+          ${it.memNcm?`<div class="muted memncm">A equipe já usou <b>${esc(it.memNcm.valor)}</b> para produto parecido (${it.memNcm.semelhanca}%), por ${esc(it.memNcm.por)} em ${esc(it.memNcm.quando||'')}
+             <button class="btn link aplicamem" data-m="${it.i}">aplicar</button></div>`:''}</td>
       <td class="mono ${it.ncm!==dig(it.ncmOrig)?'fill':''}">${it.ncm||esc(it.ncmOrig)}
           ${it.ncmItem?`<div class="muted oficial">${esc(it.ncmItem.replace(/<[^>]+>/g,'').slice(0,60))}</div>`:''}</td>
       <td class="mono ${it.cstSug?'fill':''}">${it.cst}</td>
@@ -514,6 +612,7 @@ function tabela(){
   if(linhas.length>600) $('tbody').innerHTML += `<tr><td colspan="10" class="muted">Exibindo 600 itens do filtro — a exportação inclui todos.</td></tr>`;
   $('tbody').querySelectorAll('select.mini').forEach(s=>s.onchange=e=>corrigir(+e.target.dataset.i, e.target.value));
   $('tbody').querySelectorAll('button.buscancm').forEach(b=>b.onclick=()=>abrirBuscaNcm(+b.dataset.b));
+  $('tbody').querySelectorAll('button.aplicamem').forEach(b=>b.onclick=()=>aplicarNcmDaMemoria(+b.dataset.m));
 }
 
 /* correção manual + replicação (mesmo NCM + mesma descrição, e mesma regra de enquadramento) */

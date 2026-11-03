@@ -67,7 +67,8 @@
       <button class="navitem on" data-tela="preencher"><b>1</b> Preencher cadastro</button>
       <button class="navitem" data-tela="clientes"><b>2</b> Clientes</button>
       <button class="navitem" data-tela="atualizacoes"><b>3</b> Atualizações</button>
-      <button class="navitem" data-tela="base"><b>4</b> Base e memória</button>
+      <button class="navitem" data-tela="diagnostico"><b>4</b> Diagnóstico por NCM</button>
+      <button class="navitem" data-tela="base"><b>5</b> Base e memória</button>
       <button class="navitem" data-tela="acessos" id="navAcessos" hidden><b>★</b> Acessos</button>
     </nav>
     <div class="navfoot">
@@ -203,6 +204,33 @@
         </div>
       </div>
     </section>
+    <!-- ---------- TELA · DIAGNÓSTICO POR NCM ---------- -->
+    <section class="tela" id="tela-diagnostico">
+      <header class="ph">
+        <div>
+          <h1>Diagnóstico por NCM</h1>
+          <p>A planilha reorganizada por código, não por categoria comercial. É assim que aparecem os dois erros clássicos: um mesmo NCM servindo a produtos sem relação, e produtos iguais com códigos diferentes.</p>
+        </div>
+      </header>
+      <div class="kpis" id="kpisDiag"></div>
+      <div class="card">
+        <h2>Um NCM, muitos produtos diferentes</h2>
+        <p class="muted">Quanto mais heterogêneo o conjunto, maior a chance de ser código genérico de cadastro.</p>
+        <div class="tabwrap sm">
+          <table><thead><tr><th>NCM</th><th>Itens</th><th>Texto oficial</th><th>Exemplos na planilha</th></tr></thead>
+          <tbody id="tbDiagNcm"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Produtos parecidos com NCM diferente</h2>
+        <p class="muted">Mesma raiz de descrição, códigos divergentes — um dos dois está errado.</p>
+        <div class="tabwrap sm">
+          <table><thead><tr><th>Raiz da descrição</th><th>Códigos em uso</th><th>Itens</th></tr></thead>
+          <tbody id="tbDiagDiv"></tbody></table>
+        </div>
+      </div>
+    </section>
+
     <!-- ---------- TELA 5 · ACESSOS (só administrador) ---------- -->
     <section class="tela" id="tela-acessos">
       <header class="ph">
