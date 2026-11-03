@@ -9,6 +9,9 @@
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+    # sem cache: o navegador precisa pegar a versão nova a cada publicação,
+    # senão uma correção publicada continua não valendo para quem já abriu o site
+    Cache-Control = "no-cache, must-revalidate"
 
 # O app é uma página única; qualquer rota cai no index.
 [[redirects]]
