@@ -19,6 +19,7 @@ function toast(html, ms=5000){ const t=$('toast'); t.innerHTML=html; t.classList
 
 /* estado */
 let USER=null, CLIENTES=[], CLIENTE=null, BASE=new Map(), META=new Map(), TIPI=new Set();
+let ST=[];   // substituição tributária da UF do cliente (Anexo 007 do RICMS/RN)
 let WB=null, RAW=null, RAWNAME='', SHEET='', HR=0, HEADERS=[], MAPA={}, ITENS=[], FILTRO='all';
 
 /* ============================ AUTENTICAÇÃO ============================ */
@@ -241,6 +242,7 @@ async function carregarBase(){
   (metas||[]).forEach(m=>META.set(m.cclasstrib,m));
   const {data:tipi} = await sb.from('tipi').select('ncm').limit(20000);
   TIPI.clear(); (tipi||[]).forEach(r=>TIPI.add(r.ncm));
+  await carregarST();
   kpisBase();
 }
 function kpisBase(){
@@ -251,6 +253,39 @@ function kpisBase(){
     ['k-mem', META.size, 'Códigos cClassTrib'],
     ['k-60',  CLIENTES.length, 'Clientes cadastrados']
   ].map(([c,v,l])=>`<button class="kpi ${c}" disabled><div class="v">${v}</div><div class="l">${l}</div></button>`).join('');
+}
+
+async function carregarST(){
+  const uf = (CLIENTE && CLIENTE.uf) || 'RN';
+  const {data} = await sb.from('st_uf').select('cest,ncm,descricao,segmento,fundamento').eq('uf',uf).limit(5000);
+  ST = (data||[]).sort((a,b)=>b.ncm.length-a.ncm.length);   // mais específico primeiro
+}
+
+/* Substituição tributária pelo anexo oficial da UF — não mais pelo CEST que o
+   cliente digitou. O anexo cita NCM em 4, 6 ou 8 dígitos. */
+function consultarST(ncm, desc){
+  if(!ncm || !ST.length) return null;
+  const achados = ST.filter(s=>ncm.startsWith(s.ncm));
+  if(!achados.length) return null;
+  const d = norm(desc);
+  const maisEspecifico = achados[0].ncm.length;
+  const candidatos = achados.filter(s=>s.ncm.length===maisEspecifico);
+  if(candidatos.length>1 && d){
+    // só desempata pelo que DISTINGUE os candidatos: palavras comuns a todos
+    // (ex.: "refrigerante") não decidem nada
+    const palavrasDe = c => new Set(norm(c.descricao).split(/[^a-z0-9]+/).filter(p=>p.length>=3));
+    const conjuntos = candidatos.map(palavrasDe);
+    const comuns = [...conjuntos[0]].filter(p=>conjuntos.every(c=>c.has(p)));
+    const termos = d.split(/[^a-z0-9]+/).filter(p=>p.length>=3);
+    let casado=null;
+    candidatos.forEach((c,idx)=>{
+      if(casado) return;
+      const distintas=[...conjuntos[idx]].filter(p=>!comuns.includes(p));
+      if(distintas.some(p=>termos.some(t=>p.startsWith(t.slice(0,4)) || t.startsWith(p.slice(0,4))))) casado=c;
+    });
+    if(casado) return {...casado, confirmado:true, alternativas:candidatos.length};
+  }
+  return {...candidatos[0], confirmado:candidatos.length===1, alternativas:candidatos.length};
 }
 
 /* ============================ MOTOR DE PREENCHIMENTO ============================ */
@@ -338,18 +373,24 @@ function validarNcm(bruto){
 /* CSOSN/CST e CFOP conforme o regime do cliente e a presença de ST */
 function fiscalPorRegime(item, cliente){
   const simples = cliente && (cliente.regime==='simples' || cliente.opcao_simples);
-  const temST = !!item.cestOrig || /^(500|60|10|70)/.test(String(item.cstOrig||''));
+  // o anexo oficial da UF é a autoridade; o CEST digitado na planilha é só pista
+  // e vale apenas quando o anexo daquela UF ainda não foi carregado
+  const temST = ST.length
+    ? !!item.st
+    : (!!item.cestOrig || /^(500|60|10|70)/.test(String(item.cstOrig||'')));
   const out = {};
   if(simples){
     out.cst   = temST ? '500' : '102';
     out.cfopS = temST ? '5405' : '5102';
     out.cfopE = temST ? '1403' : '1102';
-    out.nota  = 'Simples Nacional: CSOSN '+out.cst+(temST?' (mercadoria com ST)':' (sem ST)');
+    out.nota  = 'Simples Nacional: CSOSN '+out.cst+(temST?' (mercadoria com ST)':' (sem ST)')
+              + (item.st? ' · '+item.st.fundamento : '');
   } else {
     out.cst   = temST ? '060' : '000';
     out.cfopS = temST ? '5405' : '5102';
     out.cfopE = temST ? '1403' : '1102';
-    out.nota  = 'Regime normal: CST '+out.cst+(temST?' (ST já recolhida)':'');
+    out.nota  = 'Regime normal: CST '+out.cst+(temST?' (ST já recolhida)':'')
+              + (item.st? ' · '+item.st.fundamento : '');
   }
   out.sugestao = true;   // depende da operação real — sempre marcado para revisão
   return out;
@@ -428,7 +469,11 @@ $('btnSalvarMapa').onclick = async ()=>{
 };
 
 /* ============================ PASSO 2 · PREENCHER ============================ */
-$('selCliente').onchange = e=>{ CLIENTE = CLIENTES.find(c=>c.id===e.target.value)||null; };
+$('selCliente').onchange = async e=>{
+  CLIENTE = CLIENTES.find(c=>c.id===e.target.value)||null;
+  await carregarST();
+  if(CLIENTE) toast(`Cliente ${esc(CLIENTE.uf)} · ${ST.length} itens de substituição tributária carregados do anexo da UF.`);
+};
 
 $('btnRodar').onclick = ()=>{
   if(MAPA.ncm==='' || MAPA.ncm===undefined){ toast('Indique a coluna de NCM.'); return; }
@@ -450,6 +495,20 @@ $('btnRodar').onclick = ()=>{
       valor: MAPA.valor!=='' && MAPA.valor!==undefined
              ? parseFloat((r[MAPA.valor]+'').replace(/\./g,'').replace(',','.'))||0 : 0
     };
+    item.st = consultarST(item.ncm, item.desc);
+    if(item.st){
+      item.cest = item.st.cest;
+      if(item.cestOrig && dig(item.cestOrig)!==item.st.cest){
+        item.cestDivergente = true;
+        item.nota = (item.nota?item.nota+' · ':'') + `CEST da planilha (${dig(item.cestOrig)}) difere do anexo da UF (${item.st.cest})`;
+      }
+      if(!item.st.confirmado){
+        item.nota = (item.nota?item.nota+' · ':'') + `NCM com ${item.st.alternativas} CEST possíveis no anexo — confirme pela descrição`;
+      }
+    } else if(item.cestOrig){
+      item.cestDivergente = true;
+      item.nota = (item.nota?item.nota+' · ':'') + 'Planilha traz CEST, mas o NCM não consta no anexo de ST da UF';
+    }
     const a = classificarIbsCbs(item.ncm, item.desc);
     item.ct=a.ct; item.cstTrib=a.cst; item.ctDesc=a.desc; item.red=a.red; item.regra=a.regra;
     item.nota=a.nota||''; item.confIbs=a.conf;
@@ -459,7 +518,8 @@ $('btnRodar').onclick = ()=>{
     item.cfopE = f.cfopE; item.cfopESug = true;   // vazio em toda a planilha: sempre sugestão
     item.notaFiscal = f.nota;
     item.status = item.ncmStatus==='err' ? 'err'
-                : (item.confIbs==='rev' || item.cstSug || item.ncmStatus==='rev') ? 'rev' : 'ok';
+                : (item.confIbs==='rev' || item.cstSug || item.ncmStatus==='rev'
+                   || item.cestDivergente || (item.st && !item.st.confirmado)) ? 'rev' : 'ok';
     ITENS.push(item);
   });
   detectarNcmGenerico(ITENS);
