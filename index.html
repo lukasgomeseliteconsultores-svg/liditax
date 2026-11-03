@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIX Fiscal · ELITE</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📑</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ======================= LOGIN ======================= -->
+<div id="gate">
+  <form class="gatecard" id="gateForm">
+    <div class="logo">MIX<span>FISCAL</span></div>
+    <p class="sub">Acesso restrito a usuários autorizados.</p>
+    <button class="btn google w100" id="gGoogle" type="button">
+      <svg viewBox="0 0 48 48" width="17" height="17" aria-hidden="true"><path fill="#4285F4" d="M45 24c0-1.6-.1-2.7-.4-4H24v7.5h12c-.2 2-1.5 5-4.4 7l6.7 5.2C42.2 36.2 45 30.6 45 24z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.7-5.2c-1.9 1.3-4.4 2.1-7.8 2.1-6 0-11-4-12.8-9.4l-7 5.4C7.8 41 15.3 46 24 46z"/><path fill="#FBBC05" d="M11.2 28.2c-.5-1.4-.7-2.8-.7-4.2s.3-2.9.7-4.2l-7-5.4C3.1 17.3 2 20.5 2 24s1.1 6.7 2.9 9.6l6.3-5.4z"/><path fill="#EA4335" d="M24 10.6c3.4 0 6.4 1.2 8.8 3.4l6-6C35 4.6 30 2 24 2 15.3 2 7.8 7 4.9 14.4l7 5.4C13.7 14.5 18 10.6 24 10.6z"/></svg>
+      Entrar com a conta Google do escritório
+    </button>
+    <div class="ou"><span>ou com e-mail e senha</span></div>
+    <label class="f">E-mail corporativo</label>
+    <input type="email" id="gEmail" name="email" autocomplete="username" placeholder="seu.email@empresa.com.br" required>
+    <label class="f">Senha</label>
+    <input type="password" id="gPass" name="password" autocomplete="current-password" required>
+    <div class="gate-err" id="gErr"></div>
+    <button class="btn primary w100" id="gBtn" type="submit">Entrar</button>
+    <button class="btn link w100" id="gSignup" type="button">Primeiro acesso — criar senha</button>
+  </form>
+</div>
+
+<!-- ======================= APP ======================= -->
+<div id="app" hidden>
+  <aside class="nav">
+    <div class="logo sm">MIX<span>FISCAL</span></div>
+    <nav>
+      <button class="navitem on" data-tela="preencher"><b>1</b> Preencher cadastro</button>
+      <button class="navitem" data-tela="clientes"><b>2</b> Clientes</button>
+      <button class="navitem" data-tela="atualizacoes"><b>3</b> Atualizações</button>
+      <button class="navitem" data-tela="base"><b>4</b> Base e memória</button>
+    </nav>
+    <div class="navfoot">
+      <div class="who" id="whoami">—</div>
+      <button class="btn link" id="btnSair">sair</button>
+    </div>
+  </aside>
+
+  <main>
+    <!-- ---------- TELA 1 · PREENCHER ---------- -->
+    <section class="tela on" id="tela-preencher">
+      <header class="ph">
+        <div>
+          <h1>Preencher cadastro de produtos</h1>
+          <p>Suba a planilha do cliente. O sistema preenche cClassTrib, CST, CFOP e alíquotas pelo cruzamento NCM × descrição, e marca o que precisa de revisão.</p>
+        </div>
+        <select id="selCliente" class="clientepick"><option value="">— selecione o cliente —</option></select>
+      </header>
+
+      <div class="passo" id="p1">
+        <div class="drop" id="drop">
+          <strong>Arraste a planilha ou clique para selecionar</strong>
+          <span>.xlsx, .xlsm ou .csv — a formatação original é preservada na exportação</span>
+        </div>
+        <input type="file" id="file" accept=".xlsx,.xlsm,.csv" hidden>
+      </div>
+
+      <div class="passo" id="p2" hidden>
+        <h2>Mapeamento de colunas <small id="mapOrigem"></small></h2>
+        <div class="grid" id="mapGrid"></div>
+        <div class="bar">
+          <button class="btn primary" id="btnRodar">Preencher planilha</button>
+          <button class="btn quiet" id="btnSalvarMapa">Salvar mapeamento deste cliente</button>
+          <span class="muted" id="infoArq"></span>
+        </div>
+      </div>
+
+      <div class="passo" id="p3" hidden>
+        <div class="kpis" id="kpis"></div>
+        <div class="bar">
+          <input type="search" id="busca" placeholder="Buscar produto ou NCM…">
+          <span class="muted" id="infoFiltro"></span>
+          <span class="spacer"></span>
+          <button class="btn primary" id="btnExportar">Baixar planilha preenchida</button>
+          <button class="btn quiet" id="btnCsv">Relatório (.csv)</button>
+        </div>
+        <div class="tabwrap">
+          <table id="tbl">
+            <thead><tr>
+              <th>#</th><th>Produto</th><th>NCM</th><th>CSOSN/CST</th><th>CFOP saída</th><th>CFOP entrada</th>
+              <th>cClassTrib</th><th>CST IBS/CBS</th><th>Situação</th><th>Ajuste</th>
+            </tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- TELA 2 · CLIENTES ---------- -->
+    <section class="tela" id="tela-clientes">
+      <header class="ph">
+        <div>
+          <h1>Clientes</h1>
+          <p>O cadastro define as regras: Simples usa CSOSN, Presumido e Real usam CST. Os dados vêm da consulta pública de CNPJ.</p>
+        </div>
+      </header>
+      <div class="card">
+        <h2>Buscar por CNPJ</h2>
+        <div class="bar">
+          <input type="text" id="cnpj" placeholder="00.000.000/0000-00" maxlength="18" class="mono">
+          <button class="btn primary" id="btnCnpj">Consultar</button>
+          <span class="muted" id="cnpjMsg"></span>
+        </div>
+        <div id="cnpjRes" hidden>
+          <div class="grid" id="cnpjGrid"></div>
+          <div class="aviso" id="avisoRegime" hidden></div>
+          <div class="bar"><button class="btn primary" id="btnSalvarCliente">Salvar cliente</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Cadastrados</h2>
+        <div class="tabwrap sm">
+          <table><thead><tr><th>Cliente</th><th>CNPJ</th><th>UF</th><th>Regime</th><th>CNAE</th><th>Situação</th></tr></thead>
+          <tbody id="tbClientes"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- TELA 3 · ATUALIZAÇÕES ---------- -->
+    <section class="tela" id="tela-atualizacoes">
+      <header class="ph">
+        <div>
+          <h1>Atualizações da legislação</h1>
+          <p>A vigilância roda sozinha todo dia útil às 6h31, na nuvem. Aqui você aprova o que entra na base.</p>
+        </div>
+        <button class="btn quiet" id="btnRecarregar">Recarregar</button>
+      </header>
+      <div class="tabwrap">
+        <table><thead><tr><th>Detectado</th><th>Ato</th><th>Fonte</th><th>Impacto</th><th>Efeitos</th><th>Situação</th><th></th></tr></thead>
+        <tbody id="tbAtos"></tbody></table>
+      </div>
+    </section>
+
+    <!-- ---------- TELA 4 · BASE ---------- -->
+    <section class="tela" id="tela-base">
+      <header class="ph">
+        <div>
+          <h1>Base e memória</h1>
+          <p>Tabelas de referência e as correções que a equipe já ensinou ao sistema.</p>
+        </div>
+      </header>
+      <div class="kpis" id="kpisBase"></div>
+      <div class="card">
+        <h2>Carregar tabela oficial</h2>
+        <p class="muted">A TIPI tem mais de 10 mil NCMs e é atualizada por ADE da Receita. Suba aqui o arquivo oficial e o sistema grava no banco — é assim que a base se mantém sozinha.</p>
+        <div class="bar">
+          <select id="selTabela">
+            <option value="tipi">TIPI — NCM e alíquota de IPI</option>
+            <option value="st_uf">ICMS-ST por UF — CEST e MVA</option>
+            <option value="beneficio_icms">Benefícios de ICMS</option>
+            <option value="cfop_matriz">Matriz de CFOP</option>
+          </select>
+          <input type="file" id="fileBase" accept=".xlsx,.csv">
+          <button class="btn primary" id="btnCarregarBase">Carregar</button>
+          <span class="muted" id="baseMsg"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Memória de correções</h2>
+        <div class="tabwrap sm">
+          <table><thead><tr><th>NCM</th><th>Produto</th><th>Campo</th><th>Valor</th><th>Quem</th><th>Quando</th></tr></thead>
+          <tbody id="tbMemoria"></tbody></table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

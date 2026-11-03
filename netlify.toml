@@ -1,0 +1,17 @@
+# Publicação do MIX Fiscal — site estático, sem etapa de build.
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# O app é uma página única; qualquer rota cai no index.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
