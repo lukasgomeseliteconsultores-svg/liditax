@@ -5,7 +5,8 @@
    ============================================================ */
 const SB_URL  = 'https://mxsznvkksqeogkkgoylo.supabase.co';
 const SB_KEY  = 'sb_publishable_U4WfRm7NFfhY86yLHAjPZw_9mFW5Es0';
-const DOMINIO = '@eliteconsultores.com.br';     // o banco também valida isto por RLS
+// O acesso não depende mais do domínio do e-mail: quem libera é o administrador
+// do portal, na tela "Acessos". O banco valida a aprovação por RLS.
 const sb = supabase.createClient(SB_URL, SB_KEY);
 
 const $  = id => document.getElementById(id);
@@ -24,7 +25,6 @@ let WB=null, RAW=null, RAWNAME='', SHEET='', HR=0, HEADERS=[], MAPA={}, ITENS=[]
 $('gateForm').addEventListener('submit', async e=>{
   e.preventDefault(); $('gErr').textContent='';
   const email=$('gEmail').value.trim().toLowerCase(), pass=$('gPass').value;
-  if(!email.endsWith(DOMINIO)){ $('gErr').textContent='E-mail não autorizado para esta ferramenta.'; return; }
   $('gBtn').disabled=true;
   const {error} = await sb.auth.signInWithPassword({email, password:pass});
   $('gBtn').disabled=false;
@@ -34,12 +34,11 @@ $('gateForm').addEventListener('submit', async e=>{
 $('gSignup').onclick = async ()=>{
   $('gErr').textContent='';
   const email=$('gEmail').value.trim().toLowerCase(), pass=$('gPass').value;
-  if(!email.endsWith(DOMINIO)){ $('gErr').textContent='E-mail não autorizado para esta ferramenta.'; return; }
   if(pass.length<8){ $('gErr').textContent='Defina uma senha com ao menos 8 caracteres.'; return; }
   const {error}=await sb.auth.signUp({email, password:pass});
   if(error){ $('gErr').textContent=error.message; return; }
   $('gErr').textContent='';
-  toast('Conta criada. Se o projeto exigir confirmação, abra o link enviado ao seu e-mail e entre em seguida.', 9000);
+  toast('Conta criada. Seu pedido de acesso vai para a aprovação do administrador do portal.', 9000);
 };
 /* Entrada pela conta Google do escritório (Workspace). O parâmetro hd pede ao
    Google que só ofereça contas do domínio; a checagem final é feita aqui e no
@@ -49,7 +48,7 @@ $('gGoogle').onclick = async ()=>{
   const {error} = await sb.auth.signInWithOAuth({
     provider:'google',
     options:{ redirectTo: location.origin + location.pathname,
-              queryParams:{ hd: DOMINIO.replace('@',''), prompt:'select_account' } }
+              queryParams:{ prompt:'select_account' } }
   });
   if(error) $('gErr').textContent = /provider is not enabled/i.test(error.message)
     ? 'O login pelo Google ainda não está habilitado no projeto Supabase (Authentication → Providers → Google).'
@@ -59,7 +58,7 @@ $('gGoogle').onclick = async ()=>{
 $('gReset').onclick = async ()=>{
   const email=$('gEmail').value.trim().toLowerCase();
   $('gErr').textContent='';
-  if(!email.endsWith(DOMINIO)){ $('gErr').textContent='Informe seu e-mail corporativo acima para receber o link.'; return; }
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ $('gErr').textContent='Informe seu e-mail acima para receber o link.'; return; }
   const {error} = await sb.auth.resetPasswordForEmail(email,
     {redirectTo: location.origin + location.pathname});
   toast(error ? 'Não foi possível enviar: '+error.message
@@ -115,12 +114,6 @@ let EH_ADMIN=false;
 async function entrar(){
   const {data:{user}} = await sb.auth.getUser();
   if(!user){ return; }
-  if(!user.email || !user.email.endsWith(DOMINIO)){        // vale também para a volta do Google
-    await sb.auth.signOut();
-    $('gate').hidden=false; $('app').hidden=true; $('espera').hidden=true;
-    $('gErr').textContent='Esta conta Google não pertence ao domínio autorizado.';
-    return;
-  }
   const origem = (user.app_metadata && user.app_metadata.provider) || 'senha';
   const ap = await verificarAprovacao(origem==='email'?'senha':origem);
   if(!ap.ok){
@@ -133,8 +126,7 @@ async function entrar(){
   $('espera').hidden=true;
   $('gate').hidden=true; $('app').hidden=false;
   $('navAcessos').hidden = !EH_ADMIN;
-  const [u,d]=USER.split('@');
-  $('whoami').textContent = u+'@'+d.slice(0,2)+'•'.repeat(Math.max(3,d.length-6))+d.slice(-7);
+  $('whoami').textContent = USER;
   await Promise.all([carregarBase(), carregarClientes()]);
   carregarAtos(); carregarMemoria();
 }
