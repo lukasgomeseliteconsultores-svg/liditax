@@ -255,14 +255,27 @@ function detectarNcmGenerico(itens){
   });
 }
 
+/* Código residual (RGI 3-a): termina em 00 ou 90 havendo item específico na
+   mesma subposição. É o sinal clássico de NCM "jogado" no cadastro. */
+function ncmResidual(ncm){
+  if(!/^(00|90)$/.test(ncm.slice(-2))) return false;
+  const base = ncm.slice(0,6);
+  for(const c of TIPI){
+    if(c.length===8 && c.slice(0,6)===base && c!==ncm && !/^(00|90)$/.test(c.slice(-2))) return true;
+  }
+  return false;
+}
+
 function validarNcm(bruto){
   const d = dig(bruto);
   if(!d) return {ncm:'', status:'err', msg:'NCM ausente'};
   if(d.length===8){
     // só acusa NCM inexistente quando a TIPI está carregada por inteiro (>10 mil códigos);
     // com carga parcial a checagem acusaria falso positivo em tudo
-    if(TIPI.size>8000 && !TIPI.has(d)) return {ncm:d, status:'err', msg:'NCM não consta na TIPI vigente — risco de Rejeição 778'};
-    return {ncm:d, status:'ok', msg: TIPI.size>8000 ? '' : ''};
+    if(TIPI.size>8000 && !TIPI.has(d)) return {ncm:d, status:'err', msg:'NCM não consta na nomenclatura vigente — risco de Rejeição 778'};
+    if(TIPI.size>8000 && ncmResidual(d))
+      return {ncm:d, status:'rev', msg:'Código residual (termina em 00/90) havendo item específico na mesma subposição — pela RGI 3-a prevalece o mais específico'};
+    return {ncm:d, status:'ok', msg:''};
   }
   if(d.length===7) return {ncm:'0'+d, status:'rev', msg:'NCM com 7 dígitos — provável zero à esquerda; corrigido para '+('0'+d)+', confirme'};
   return {ncm:d, status:'err', msg:'NCM com '+d.length+' dígitos — inválido'};
@@ -393,10 +406,58 @@ $('btnRodar').onclick = ()=>{
     ITENS.push(item);
   });
   detectarNcmGenerico(ITENS);
-  aplicarMemoria().then(()=>{ $('p3').hidden=false; FILTRO='all'; kpis(); tabela();
+  carregarTextosOficiais().then(aplicarMemoria).then(()=>{ $('p3').hidden=false; FILTRO='all'; kpis(); tabela();
     $('p3').scrollIntoView({behavior:'smooth'});
     toast(`<b>${ITENS.length}</b> itens processados. ${ITENS.filter(i=>i.status!=='ok').length} precisam de conferência.`); });
 };
+
+/* Traz o texto oficial da nomenclatura para cada NCM da planilha. É com ele
+   que a pessoa compara a descrição do produto — o método que a própria
+   auditoria de NCM recomenda. */
+async function carregarTextosOficiais(){
+  const codigos=[...new Set(ITENS.map(i=>i.ncm).filter(n=>n && n.length===8))];
+  for(let i=0;i<codigos.length;i+=400){
+    const {data} = await sb.from('tipi').select('ncm,descricao,descricao_completa,aliquota_ipi')
+                           .in('ncm', codigos.slice(i,i+400));
+    (data||[]).forEach(r=>{
+      ITENS.filter(it=>it.ncm===r.ncm).forEach(it=>{
+        it.ncmTexto = r.descricao_completa || r.descricao || '';
+        it.ncmItem  = r.descricao || '';
+        it.ipi      = r.aliquota_ipi || '';
+      });
+    });
+  }
+}
+
+/* Busca assistida na nomenclatura: devolve candidatos, nunca aplica sozinho. */
+async function buscarNcm(termo){
+  const {data, error} = await sb.rpc('sugerir_ncm', {p_descricao:termo, p_limite:8});
+  if(error){ toast('Busca indisponível: '+error.message); return []; }
+  return data||[];
+}
+async function abrirBuscaNcm(i){
+  const it=ITENS.find(x=>x.i===i); if(!it) return;
+  const termo = prompt('Buscar na nomenclatura oficial — descreva o produto pelo nome genérico\n'
+    + '(a busca é por texto, serve de apoio; a classificação continua sendo sua):', it.desc||'');
+  if(termo===null) return;
+  const cands = await buscarNcm(termo);
+  if(!cands.length){ toast('Nenhum código encontrado para esse termo.'); return; }
+  const linhas = cands.map((c,n)=>`${n+1}) ${c.ncm}${c.residual?' (residual)':''} — ${(c.descricao_item||'').slice(0,60)}\n     ${(c.descricao||'').slice(0,110)}`).join('\n');
+  const esc = prompt('Candidatos encontrados (apoio de busca, não classificação):\n\n'+linhas
+    + '\n\nDigite o número para aplicar ao item, ou cancele para não mudar nada.');
+  const idx = parseInt(esc,10);
+  if(!idx || idx<1 || idx>cands.length) return;
+  const novo = cands[idx-1];
+  it.ncm = novo.ncm; it.ncmStatus='mem'; it.ncmMsg='NCM definido manualmente pelo executor';
+  it.ncmTexto = novo.descricao; it.ncmItem = novo.descricao_item;
+  it.status='mem'; it.porMemoria=USER;
+  await sb.from('memoria_correcao').upsert([{
+    cliente_id: CLIENTE? CLIENTE.id : null, ncm: it.ncm, descricao_norm: norm(it.desc),
+    campo:'ncm', valor: novo.ncm, usuario: USER, origem:'manual'
+  }], {onConflict:'cliente_id,ncm,descricao_norm,campo'});
+  kpis(); tabela(); carregarMemoria();
+  toast(`NCM do item alterado para <b>${novo.ncm}</b> e gravado na memória da equipe.`);
+}
 
 async function aplicarMemoria(){
   if(!ITENS.length) return;
@@ -438,18 +499,21 @@ function tabela(){
     return `<tr>
       <td class="mono">${it.i+2+HR}</td>
       <td>${esc(it.desc)||'<span class="muted">—</span>'}<div class="muted">${esc(msg)}</div></td>
-      <td class="mono ${it.ncm!==dig(it.ncmOrig)?'fill':''}">${it.ncm||esc(it.ncmOrig)}</td>
+      <td class="mono ${it.ncm!==dig(it.ncmOrig)?'fill':''}">${it.ncm||esc(it.ncmOrig)}
+          ${it.ncmItem?`<div class="muted oficial">${esc(it.ncmItem.replace(/<[^>]+>/g,'').slice(0,60))}</div>`:''}</td>
       <td class="mono ${it.cstSug?'fill':''}">${it.cst}</td>
       <td class="mono ${it.cfopSSug?'fill':''}">${it.cfopS}</td>
       <td class="mono ${it.cfopESug?'fill':''}">${it.cfopE}</td>
       <td class="mono fill">${it.ct}<div class="muted">${esc((it.ctDesc||'').slice(0,40))}</div></td>
       <td class="mono fill">${it.cstTrib}</td>
       <td><span class="chip ${cl}">${rot}</span>${it.porMemoria?`<div class="muted">${esc(it.porMemoria)}</div>`:''}</td>
-      <td><select class="mini" data-i="${it.i}"><option value="">— alterar cClassTrib —</option>${opts}</select></td>
+      <td><select class="mini" data-i="${it.i}"><option value="">— alterar cClassTrib —</option>${opts}</select>
+          <button class="btn link buscancm" data-b="${it.i}">buscar NCM na nomenclatura</button></td>
     </tr>`;
   }).join('');
   if(linhas.length>600) $('tbody').innerHTML += `<tr><td colspan="10" class="muted">Exibindo 600 itens do filtro — a exportação inclui todos.</td></tr>`;
   $('tbody').querySelectorAll('select.mini').forEach(s=>s.onchange=e=>corrigir(+e.target.dataset.i, e.target.value));
+  $('tbody').querySelectorAll('button.buscancm').forEach(b=>b.onclick=()=>abrirBuscaNcm(+b.dataset.b));
 }
 
 /* correção manual + replicação (mesmo NCM + mesma descrição, e mesma regra de enquadramento) */

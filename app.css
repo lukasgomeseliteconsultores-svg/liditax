@@ -129,6 +129,8 @@ td.mono{font-family:"IBM Plex Mono",monospace;font-size:12.5px;white-space:nowra
 #tbl td:nth-child(2){min-width:300px;max-width:380px}
 #tbl td:nth-child(7){min-width:230px}
 #tbl td .muted{display:block;margin-top:3px;line-height:1.35}
+#tbl td .oficial{font-style:italic;white-space:normal;max-width:210px}
+.btn.buscancm{display:block;margin-top:5px;font-size:11.5px}
 .chip{display:inline-block;padding:2px 9px;border-radius:999px;font:600 11.5px "IBM Plex Sans";white-space:nowrap}
 .c-ok{background:var(--zero-bg);color:var(--zero)} .c-rev{background:var(--rev-bg);color:var(--rev)}
 .c-mem{background:var(--mem-bg);color:var(--mem)} .c-err{background:#FBE9E7;color:var(--err)}
