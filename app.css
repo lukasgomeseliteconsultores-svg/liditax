@@ -41,10 +41,10 @@ p{margin:4px 0 0;color:var(--ink2);font-size:13px}
 .logo.sm{font-size:17px;padding:4px 0 18px}
 
 /* ---------- login ---------- */
-#gate,#espera{position:fixed;inset:0;display:grid;place-items:center;background:var(--paper);padding:20px;z-index:50}
+#gate,#espera,#novaSenha{position:fixed;inset:0;display:grid;place-items:center;background:var(--paper);padding:20px;z-index:50}
 #espera .gatecard{text-align:left}
-#espera h2{margin:14px 0 2px;font-size:17px}
-#gate[hidden],#espera[hidden],#app[hidden],[hidden]{display:none!important}   /* o atributo hidden precisa vencer o display do seletor de id */
+#espera h2,#novaSenha h2{margin:14px 0 2px;font-size:17px}
+#gate[hidden],#espera[hidden],#novaSenha[hidden],#app[hidden],[hidden]{display:none!important}   /* o atributo hidden precisa vencer o display do seletor de id */
 .gatecard{background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--accent);
   border-radius:14px;max-width:400px;width:100%;padding:28px;box-shadow:0 14px 44px rgba(21,33,28,.08)}
 .gatecard .sub{margin:2px 0 18px}

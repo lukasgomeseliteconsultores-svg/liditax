@@ -27,6 +27,22 @@
     <div class="gate-err" id="gErr"></div>
     <button class="btn primary w100" id="gBtn" type="submit">Entrar</button>
     <button class="btn link w100" id="gSignup" type="button">Primeiro acesso — criar senha</button>
+    <button class="btn link w100" id="gReset" type="button">Esqueci minha senha</button>
+  </form>
+</div>
+
+<!-- ================== DEFINIR NOVA SENHA ================== -->
+<div id="novaSenha" hidden>
+  <form class="gatecard" id="formNovaSenha">
+    <div class="logo">MIX<span>FISCAL</span></div>
+    <h2>Definir nova senha</h2>
+    <p class="sub">Escolha a senha que vai usar daqui em diante.</p>
+    <label class="f">Nova senha</label>
+    <input type="password" id="nsPass" autocomplete="new-password" minlength="8" required>
+    <label class="f">Repita a nova senha</label>
+    <input type="password" id="nsPass2" autocomplete="new-password" minlength="8" required>
+    <div class="gate-err" id="nsErr"></div>
+    <button class="btn primary w100" type="submit">Salvar senha e entrar</button>
   </form>
 </div>
 

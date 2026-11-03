@@ -55,9 +55,36 @@ $('gGoogle').onclick = async ()=>{
     ? 'O login pelo Google ainda não está habilitado no projeto Supabase (Authentication → Providers → Google).'
     : error.message;
 };
-/* volta do redirecionamento do Google */
+/* Recuperação de senha: envia o link e, na volta, pede a nova senha */
+$('gReset').onclick = async ()=>{
+  const email=$('gEmail').value.trim().toLowerCase();
+  $('gErr').textContent='';
+  if(!email.endsWith(DOMINIO)){ $('gErr').textContent='Informe seu e-mail corporativo acima para receber o link.'; return; }
+  const {error} = await sb.auth.resetPasswordForEmail(email,
+    {redirectTo: location.origin + location.pathname});
+  toast(error ? 'Não foi possível enviar: '+error.message
+              : 'Link de recuperação enviado para o seu e-mail. Abra o link nesta mesma máquina.');
+};
+$('formNovaSenha').addEventListener('submit', async e=>{
+  e.preventDefault(); $('nsErr').textContent='';
+  const p1=$('nsPass').value, p2=$('nsPass2').value;
+  if(p1.length<8){ $('nsErr').textContent='Use ao menos 8 caracteres.'; return; }
+  if(p1!==p2){ $('nsErr').textContent='As duas senhas não são iguais.'; return; }
+  const {error} = await sb.auth.updateUser({password:p1});
+  if(error){ $('nsErr').textContent=error.message; return; }
+  $('novaSenha').hidden=true;
+  toast('Senha alterada.');
+  entrar();
+});
+
+/* volta do redirecionamento do Google e do link de recuperação */
 sb.auth.onAuthStateChange((evt, session)=>{
-  if(evt==='SIGNED_IN' && session && !USER) entrar();
+  if(evt==='PASSWORD_RECOVERY'){
+    $('gate').hidden=true; $('app').hidden=true; $('espera').hidden=true;
+    $('novaSenha').hidden=false;
+    return;
+  }
+  if(evt==='SIGNED_IN' && session && !USER && $('novaSenha').hidden) entrar();
 });
 $('btnSair').onclick = async ()=>{ await sb.auth.signOut(); location.reload(); };
 
