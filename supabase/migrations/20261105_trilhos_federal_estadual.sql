@@ -1,0 +1,3 @@
+-- Aplicada no projeto mix-fiscal-elite em 05/11/2026 (Sprint 2).
+-- Dois trilhos que não se cruzam: fed_* e est_*. Regra só vira vigente aprovada e dentro da vigência.
+-- Ver o SQL completo no histórico de migrações do Supabase: data_lake_trilhos_federal_estadual e rls_trilhos.

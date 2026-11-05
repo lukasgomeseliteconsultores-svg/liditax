@@ -20,8 +20,11 @@ function toast(html, ms=5000){ const t=$('toast'); t.innerHTML=html; t.classList
 /* estado */
 let USER=null, CLIENTES=[], CLIENTE=null, BASE=new Map(), META=new Map(), TIPI=new Set();
 let ST=[];   // substituição tributária da UF do cliente (Anexo 007 do RICMS/RN)
+let OVERRIDES={};   // fundamento corrigido pela equipe: regra|código original -> novo código
 let WB=null, RAW=null, RAWNAME='', SHEET='', HR=0, HEADERS=[], MAPA={}, ITENS=[], FILTRO='all';
 let SELECAO=new Set();   // chaves de itens marcados para edição em lote
+let ULTIMO_LOTE={replicados:0,total:0};
+let TRILHA=[];           // toda alteração feita na sessão, para a aba de correções
 
 /* ============================ AUTENTICAÇÃO ============================ */
 $('gateForm').addEventListener('submit', async e=>{
@@ -243,7 +246,8 @@ async function carregarBase(){
   (metas||[]).forEach(m=>META.set(m.cclasstrib,m));
   const {data:tipi} = await sb.from('tipi').select('ncm').limit(20000);
   TIPI.clear(); (tipi||[]).forEach(r=>TIPI.add(r.ncm));
-  await carregarST();
+  await carregarOverrides();
+  await Promise.all([carregarST(), carregarRegrasICMS().catch(e=>console.warn('regras ICMS:',e))]);
   kpisBase();
 }
 function kpisBase(){
@@ -256,10 +260,74 @@ function kpisBase(){
   ].map(([c,v,l])=>`<button class="kpi ${c}" disabled><div class="v">${v}</div><div class="l">${l}</div></button>`).join('');
 }
 
+/* Regra de fundamento: quando a equipe corrige um enquadramento, a decisão vale
+   para todos os itens que caíram pela mesma regra — inclusive em planilhas
+   futuras. É a replicação que existia antes e que eu havia perdido. */
+async function carregarOverrides(){
+  const {data} = await sb.from('fundamento_override').select('*').eq('campo','cclasstrib').limit(2000);
+  OVERRIDES={};
+  (data||[]).forEach(r=>{ OVERRIDES[r.regra+'|'+r.valor_origem]={valor:r.valor_novo, por:r.usuario, quando:r.criado_em}; });
+}
+
 async function carregarST(){
   const uf = (CLIENTE && CLIENTE.uf) || 'RN';
-  const {data} = await sb.from('st_uf').select('cest,ncm,descricao,segmento,fundamento').eq('uf',uf).limit(5000);
-  ST = (data||[]).sort((a,b)=>b.ncm.length-a.ncm.length);   // mais específico primeiro
+  // trilho estadual: só regra aprovada e dentro da vigência
+  const {data:nova} = await sb.from('est_regra_vigente')
+    .select('cest,ncm,descricao,fundamento,vigencia_inicio,trecho_id')
+    .eq('uf',uf).eq('especie','st').limit(5000);
+  let linhas = (nova||[]).filter(x=>x.ncm).map(x=>({...x, segmento:(x.cest||'').slice(0,2),
+                 fundamento: x.fundamento + (x.vigencia_inicio? ' — vigente desde '+x.vigencia_inicio.split('-').reverse().join('/') : '')}));
+  ST_FONTE = 'trilho estadual';
+  if(!linhas.length){       // UF ainda sem carga no trilho novo: usa a base anterior
+    const {data} = await sb.from('st_uf').select('cest,ncm,descricao,segmento,fundamento').eq('uf',uf).limit(5000);
+    linhas = data||[]; ST_FONTE = 'base anterior';
+  }
+  ST = linhas.sort((a,b)=>b.ncm.length-a.ncm.length);   // mais específico primeiro
+}
+
+/* ---------- ICMS do produto: isenção, redução de BC e alíquota interna (trilho estadual) ---------- */
+let REGRAS_ICMS = [], MVA = [], ST_FONTE = '';
+async function carregarRegrasICMS(){
+  const uf = (CLIENTE && CLIENTE.uf) || 'RN';
+  const {data} = await sb.from('est_regra_vigente')
+    .select('especie,ncm,descricao,aliquota,reducao_bc,carga,operacao,exige,exclui,condicao,fundamento')
+    .eq('uf',uf).in('especie',['aliquota','reducao','isencao']).limit(2000);
+  REGRAS_ICMS = (data||[]).filter(r=>r.operacao!=='interestadual' && (r.ncm || (r.exige&&r.exige.length)));
+  const {data:mv} = await sb.from('st_mva').select('produto,mva_original,mva_ajustada,aliquota_interestadual,fundamento').eq('uf',uf).limit(1000);
+  MVA = (mv||[]).map(m=>({...m,
+    cests:(m.produto.match(/\d{2}\.\d{3}\.\d{2}/g)||[]).map(c=>c.replace(/\./g,'')),
+    ncms:(m.produto.match(/NCM\s*([\d\.]{4,10})/gi)||[]).map(x=>x.replace(/\D/g,''))}));
+}
+const PESO_ICMS = {isencao:3, reducao:2, aliquota:1};
+function icmsDoItem(item, cliente){
+  const simples = cliente && (cliente.regime==='simples' || cliente.opcao_simples);
+  const d = norm(item.desc||''), ncm = item.ncm||'';
+  const cand = REGRAS_ICMS.filter(r=>{
+    if(r.ncm && !ncm.startsWith(r.ncm)) return false;
+    if(r.exige && r.exige.length && !r.exige.some(t=>d.includes(t))) return false;
+    if(r.exclui && r.exclui.length && r.exclui.some(t=>d.includes(t))) return false;
+    return true;
+  }).sort((a,b)=> (b.ncm||'').length-(a.ncm||'').length
+              || ((b.exige&&b.exige.length)?1:0)-((a.exige&&a.exige.length)?1:0)
+              || PESO_ICMS[b.especie]-PESO_ICMS[a.especie]);
+  const r = cand[0];
+  const modal = REGRAS_ICMS.find(x=>x.especie==='aliquota' && !x.ncm && !(x.exige&&x.exige.length) && +x.aliquota===20);
+  const out = {aliq:'20', red:'', especie:'aliquota', cst:'000',
+               fund: 'Alíquota modal — Art. 29, I, "a", do RICMS/RN'};
+  if(r){
+    out.especie = r.especie;
+    out.fund = r.fundamento + (r.condicao ? ' — '+r.condicao : '');
+    if(r.especie==='isencao'){ out.aliq='0'; out.cst='040'; }
+    else if(r.especie==='reducao'){ out.aliq=String(+r.aliquota||20); out.red=String(+r.reducao_bc); out.cst='020'; }
+    else { out.aliq=String(+r.aliquota); out.cst='000'; }
+  }
+  if(simples){ out.aliq=''; out.red=''; out.fund='Simples Nacional: ICMS pelo DAS · '+out.fund; }
+  return out;
+}
+function mvaDoCest(cest){
+  if(!cest || !MVA.length) return '';
+  const m = MVA.find(x=>x.cests.includes(cest));
+  return m ? String(+m.mva_original) : '';
 }
 
 /* Substituição tributária pelo anexo oficial da UF — não mais pelo CEST que o
@@ -352,15 +420,27 @@ function classificarIbsCbs(ncm, desc){
     const escolhido = confirmado || okList.find(x=>x.c.aplica) || null;
 
     if(!escolhido){            // nenhum enquadramento confirmado: não aplica benefício
+      const ov0 = OVERRIDES[regra+'|000001'];
+      if(ov0){ const mo=META.get(ov0.valor)||{};
+        return {ct:ov0.valor, cst:mo.cst||ov0.valor.slice(0,3), desc:mo.descricao||'', red:mo.reducao||'',
+                conf:'memoria', regra, orig:'000001',
+                nota:'Enquadramento corrigido pela equipe para este fundamento ('+(ov0.por||'').split('@')[0]+')'}; }
       const m=META.get('000001')||{};
-      return {ct:'000001', cst:'000', desc:m.descricao||'Tributação integral', red:'0%', conf:'rev', regra,
+      return {ct:'000001', cst:'000', desc:m.descricao||'Tributação integral', red:'0%', conf:'rev', regra, orig:'000001',
               nota:'Benefício NÃO aplicado — '+okList[0].c.motivo+' Enquadramento possível: '+hits.map(h=>h.cclasstrib).join(' / ')+'.'};
+    }
+    const ov = OVERRIDES[regra+'|'+escolhido.h.cclasstrib];
+    if(ov){
+      const mo=META.get(ov.valor)||{};
+      return {ct:ov.valor, cst:mo.cst||ov.valor.slice(0,3), desc:mo.descricao||'', red:mo.reducao||'',
+              conf:'memoria', regra, orig:escolhido.h.cclasstrib,
+              nota:'Enquadramento corrigido pela equipe para este fundamento ('+(ov.por||'').split('@')[0]+')'};
     }
     const m=META.get(escolhido.h.cclasstrib)||{};
     const varios = hits.length>1;
     const condicional = !!(escolhido.h.exige||escolhido.h.exclui);
     return {ct:escolhido.h.cclasstrib, cst:escolhido.h.cst, desc:m.descricao||'', red:m.reducao||'',
-            conf: (varios||condicional||len<6) ? 'rev' : 'ok', regra,
+            conf: (varios||condicional||len<6) ? 'rev' : 'ok', regra, orig:escolhido.h.cclasstrib,
             nota: varios ? 'NCM com mais de um enquadramento ('+hits.map(h=>h.cclasstrib).join(' / ')+') — confirmado pela descrição.'
                          : (condicional ? 'Condição confirmada pela descrição. '+(escolhido.h.condicao||'') : '')};
   }
@@ -409,13 +489,23 @@ function validarNcm(bruto){
 }
 
 /* CSOSN/CST e CFOP conforme o regime do cliente e a presença de ST */
+/* o código que já estava na planilha indica ST? depende do regime:
+   Simples trabalha com CSOSN (201,202,203,500) e o regime normal com CST ICMS,
+   que pode vir precedido do dígito de origem da mercadoria (060, 160, 260...) */
+function indicaST(cstOrig, simples){
+  const d = dig(cstOrig||''); if(!d) return false;
+  if(simples) return ['201','202','203','500'].includes(d.padStart(3,'0'));
+  const cst = d.length>=3 ? d.slice(-2) : d.padStart(2,'0');
+  return ['10','30','60','70'].includes(cst);
+}
+
 function fiscalPorRegime(item, cliente){
   const simples = cliente && (cliente.regime==='simples' || cliente.opcao_simples);
   // o anexo oficial da UF é a autoridade; o CEST digitado na planilha é só pista
   // e vale apenas quando o anexo daquela UF ainda não foi carregado
   const temST = ST.length
     ? !!item.st
-    : (!!item.cestOrig || /^(500|60|10|70)/.test(String(item.cstOrig||'')));
+    : (!!item.cestOrig || indicaST(item.cstOrig, simples));
   const out = {};
   if(simples){
     out.cst   = temST ? '500' : '102';
@@ -424,7 +514,7 @@ function fiscalPorRegime(item, cliente){
     out.nota  = 'Simples Nacional: CSOSN '+out.cst+(temST?' (mercadoria com ST)':' (sem ST)')
               + (item.st? ' · '+item.st.fundamento : '');
   } else {
-    out.cst   = temST ? '060' : '000';
+    out.cst   = temST ? '060' : (item.cstIcms || '000');
     out.cfopS = temST ? '5405' : '5102';
     out.cfopE = temST ? '1403' : '1102';
     out.nota  = 'Regime normal: CST '+out.cst+(temST?' (ST já recolhida)':'')
@@ -463,6 +553,8 @@ const CAMPOS = [
   ['desc',  'Descrição do produto', ['produto','descricao','descrição','item','mercadoria']],
   ['ncm',   'NCM',                  ['ncm']],
   ['cest',  'CEST',                 ['cest']],
+  ['red',   'Redução BC ICMS (%)',  ['reducao bc','redução bc','% reducao','% redução','red bc']],
+  ['mva',   'MVA ST (%)',           ['mva']],
   ['valor', 'Valor de venda',       ['valor','preco','preço','venda']],
   ['cst',   'CST/CSOSN ICMS',       ['cst/csosn','csosn','cst icms']],
   ['aliq',  'Alíquota ICMS',        ['aliquota icms','alíquota icms']],
@@ -510,8 +602,8 @@ $('btnSalvarMapa').onclick = async ()=>{
 /* ============================ PASSO 2 · PREENCHER ============================ */
 $('selCliente').onchange = async e=>{
   CLIENTE = CLIENTES.find(c=>c.id===e.target.value)||null;
-  await carregarST();
-  if(CLIENTE) toast(`Cliente ${esc(CLIENTE.uf)} · ${ST.length} itens de substituição tributária carregados do anexo da UF.`);
+  await Promise.all([carregarST(), carregarRegrasICMS()]);
+  if(CLIENTE) toast(`Cliente ${esc(CLIENTE.uf)} · ${ST.length} linhas de substituição tributária (${ST_FONTE}) e ${REGRAS_ICMS.length} regras de alíquota, redução e isenção.`);
 };
 
 $('btnRodar').onclick = ()=>{
@@ -530,6 +622,8 @@ $('btnRodar').onclick = ()=>{
       ncm: v.ncm, ncmStatus: v.status, ncmMsg: v.msg,
       cestOrig: MAPA.cest!=='' ? (r[MAPA.cest]+'').trim() : '',
       cstOrig:  MAPA.cst!==''  ? (r[MAPA.cst]+'').trim()  : '',
+      ctOrig:   MAPA.ctIbs!==''&&MAPA.ctIbs!==undefined ? (r[MAPA.ctIbs]+'').trim()
+              : (MAPA.ctCbs!==''&&MAPA.ctCbs!==undefined ? (r[MAPA.ctCbs]+'').trim() : ''),
       cfopSOrig:MAPA.cfopS!==''? (r[MAPA.cfopS]+'').trim(): '',
       valor: MAPA.valor!=='' && MAPA.valor!==undefined
              ? parseFloat((r[MAPA.valor]+'').replace(/\./g,'').replace(',','.'))||0 : 0
@@ -550,7 +644,12 @@ $('btnRodar').onclick = ()=>{
     }
     const a = classificarIbsCbs(item.ncm, item.desc);
     item.ct=a.ct; item.cstTrib=a.cst; item.ctDesc=a.desc; item.red=a.red; item.regra=a.regra;
-    item.nota=a.nota||''; item.confIbs=a.conf;
+    item.origCt=a.orig||a.ct;
+    item.nota=[item.nota, a.nota].filter(Boolean).join(' · '); item.confIbs=a.conf;
+    const ic = icmsDoItem(item, CLIENTE);
+    item.aliq=ic.aliq; item.redBc=ic.red; item.fundIcms=ic.fund; item.especieIcms=ic.especie; item.cstIcms=ic.cst;
+    item.aliqOrig = MAPA.aliq!=='' && MAPA.aliq!==undefined ? (r[MAPA.aliq]+'').trim() : '';
+    item.mva = mvaDoCest(item.cest);
     const f = fiscalPorRegime(item, CLIENTE);
     item.cst = item.cstOrig || f.cst;  item.cstSug = !item.cstOrig;
     item.cfopS = item.cfopSOrig || f.cfopS; item.cfopSSug = !item.cfopSOrig;
@@ -630,6 +729,7 @@ async function aplicarMemoria(){
       if(campo==='cfop_entrada'){ it.cfopE=m.valor; it.cfopESug=false; }
       if(campo==='ncm'){ it.ncm=m.valor; it.ncmStatus='ok'; it.ncmMsg=''; }
       it.status='mem'; it.porMemoria=(m.usuario||'equipe');
+      it.memoriaGravada={por:(m.usuario||'equipe'), quando:(m.criado_em||'').slice(0,10), campo};
     });
   });
 }
@@ -651,7 +751,9 @@ function tabela(){
   const q=norm($('busca').value);
   const linhas=ITENS.filter(i=>(FILTRO==='all'||i.status===FILTRO) &&
     (!q || norm(i.desc).includes(q) || i.ncm.includes(q) || (i.cest||'').includes(q)));
-  $('infoFiltro').textContent=`${linhas.length} de ${ITENS.length} itens`;
+  const gravados = ITENS.filter(i=>i.memoriaGravada).length;
+  $('infoFiltro').innerHTML = `${linhas.length} de ${ITENS.length} itens`
+    + (gravados? ` · <b class="gravado-inline">${gravados} gravados na memória</b>` : '');
   $('tbody').innerHTML = linhas.slice(0,400).map(it=>{
     const [cl,rot]=SIT[it.status];
     const k=chaveItem(it);
@@ -669,11 +771,14 @@ function tabela(){
       <td class="mono ${it.cest&&it.cest!==dig(it.cestOrig)?'fill':''}">
         ${it.cest? esc(it.cest) : '<span class="muted">sem ST</span>'}
         ${it.st&&it.st.alternativas>1?`<div class="muted">${it.st.alternativas} CEST possíveis</div>`:''}</td>
-      <td class="mono ${it.cstSug?'fill':''}">${esc(it.cst)}</td>
+      <td class="mono ${it.cstSug?'fill':''}">${esc(it.cst)}
+        ${it.aliq!==undefined && it.aliq!=='' ? `<div class="muted" title="${esc(it.fundIcms||'')}">${esc(it.aliq)}%${it.redBc?' · red. '+esc(it.redBc)+'%':''}${it.mva?' · MVA '+esc(it.mva)+'%':''}</div>`:''}</td>
       <td class="mono ${it.cfopSSug?'fill':''}">${esc(it.cfopS)} · ${esc(it.cfopE)}</td>
       <td class="mono fill">${esc(it.ct)}
-        <div class="muted">${esc((it.ctDesc||'').slice(0,34))}</div></td>
-      <td><span class="chip ${cl}">${rot}</span>${it.porMemoria?`<div class="muted">${esc((it.porMemoria||'').split('@')[0])}</div>`:''}</td>
+        <div class="muted ctdesc">${esc(it.ctDesc||'')}</div></td>
+      <td><span class="chip ${cl}">${rot}</span>
+        ${it.memoriaGravada?`<div class="gravado" title="gravado na memória da equipe por ${esc(it.memoriaGravada.por||'')} em ${esc(it.memoriaGravada.quando||'')}">✔ na memória<br><span class="gravado-quem">${esc((it.memoriaGravada.por||'').split('@')[0])}</span></div>`
+          : it.porMemoria?`<div class="muted">${esc((it.porMemoria||'').split('@')[0])}</div>`:''}</td>
     </tr>`;
   }).join('');
   if(linhas.length>400) $('tbody').innerHTML += `<tr><td colspan="8" class="muted">Mostrando 400 itens do filtro — use a busca para chegar nos demais. A exportação inclui todos.</td></tr>`;
@@ -700,10 +805,60 @@ $('btnLimparSel').onclick=()=>{ SELECAO.clear(); $('selTodos').checked=false; at
 
 /* ---------- aplicação em lote ---------- */
 const CAMPO_ITEM = {cclasstrib:'ct', cest:'cest', cst:'cst', cfop_saida:'cfopS', cfop_entrada:'cfopE'};
-async function aplicarEmLote(campo, valor, chaves){
-  const alvos = ITENS.filter(i=>chaves.has(chaveItem(i)));
-  if(!alvos.length || !valor) return 0;
-  const prop = CAMPO_ITEM[campo];
+/* ---------- lote em duas etapas: planejar (sem efeito) → prévia → executar ---------- */
+const ROTULO_LOTE = {cclasstrib:'cClassTrib', cest:'CEST', cst:'CST/CSOSN ICMS', cfop_saida:'CFOP saída', cfop_entrada:'CFOP entrada', ncm:'NCM'};
+function planejarLote(campo, valor, chavesIn, replicarFundamento){
+  const chaves = new Set(chavesIn), pedidas = new Set(chavesIn);
+  let alvos = ITENS.filter(i=>chaves.has(chaveItem(i)));
+  const fundamentos = new Map(); let extras = [];
+  if(alvos.length && valor && campo==='cclasstrib' && replicarFundamento!==false){
+    alvos.forEach(it=>{ if(it.regra && it.regra!=='—' && it.origCt)
+      fundamentos.set(it.regra+'|'+it.origCt, {regra:it.regra, origem:it.origCt}); });
+    extras = ITENS.filter(it=>!chaves.has(chaveItem(it)) && it.regra && it.origCt
+                              && fundamentos.has(it.regra+'|'+it.origCt));
+    extras.forEach(it=>chaves.add(chaveItem(it)));
+    alvos = ITENS.filter(i=>chaves.has(chaveItem(i)));
+  }
+  const prop = campo==='ncm' ? 'ncm' : CAMPO_ITEM[campo];
+  const mudam = alvos.filter(it=>String(it[prop]||'')!==String(valor));
+  return {campo, valor, prop, alvos, mudam, pedidas, fundamentos, replicados:extras.filter(e=>mudam.includes(e)).length};
+}
+
+/* janela de confirmação: mostra o que muda antes de qualquer gravação */
+function previa(planos){
+  const uteis = planos.filter(p=>p && p.mudam.length);
+  if(!uteis.length) return Promise.resolve(false);
+  const itens = new Set(); uteis.forEach(p=>p.mudam.forEach(i=>itens.add(chaveItem(i))));
+  $('pvTitulo').textContent = `Aplicar em ${itens.size} ${itens.size===1?'item':'itens'}?`;
+  $('pvResumo').innerHTML = uteis.map(p=>`<b>${esc(ROTULO_LOTE[p.campo]||p.campo)}</b> → ${esc(p.valor)}: ${p.mudam.length} ${p.mudam.length===1?'item':'itens'}`
+      + (p.replicados? ` <span class="gravado-inline">(${p.replicados} pela mesma regra de fundamento)</span>`:'')).join('<br>');
+  const linhas=[];
+  uteis.forEach(p=>p.mudam.slice(0,8).forEach(it=>linhas.push(`<tr><td>${esc((it.desc||'').slice(0,46))}</td>
+      <td>${esc(ROTULO_LOTE[p.campo]||p.campo)}</td><td class="mono">${esc(it[p.prop]||'—')}</td><td class="mono"><b>${esc(p.valor)}</b></td></tr>`)));
+  $('pvLinhas').innerHTML = linhas.slice(0,12).join('');
+  const resto = uteis.reduce((a,p)=>a+p.mudam.length,0) - Math.min(12,linhas.length);
+  $('pvMais').textContent = resto>0 ? `e mais ${resto} alteração(ões) do mesmo tipo.` : '';
+  $('pvMemoria').hidden = false;
+  const rep = uteis.reduce((a,p)=>a+(p.replicados||0),0);
+  $('pvReplicarBox').hidden = !rep; $('pvReplicarN').textContent = rep===1 ? 'o outro item' : 'os outros '+rep+' itens'; $('pvReplicar').checked = true;
+  $('previa').hidden = false; $('pvConfirmar').focus();
+  return new Promise(res=>{
+    const fim = ok=>{ $('previa').hidden=true; $('pvConfirmar').onclick=$('pvCancelar').onclick=null; document.removeEventListener('keydown',tecla);
+                      res(ok && rep && !$('pvReplicar').checked ? 'sem-replicar' : ok); };
+    const tecla = e=>{ if(e.key==='Escape') fim(false); };
+    $('pvConfirmar').onclick=()=>fim(true); $('pvCancelar').onclick=()=>fim(false);
+    document.addEventListener('keydown',tecla);
+  });
+}
+
+async function executarLote(pl){
+  const {campo, valor, prop, mudam:alvos, pedidas, fundamentos} = pl;
+  if(!alvos.length) return 0;
+  for(const [chave,f] of fundamentos){
+    OVERRIDES[chave]={valor, por:USER, quando:new Date().toISOString()};
+    await sb.from('fundamento_override').upsert([{campo:'cclasstrib', regra:f.regra,
+      valor_origem:f.origem, valor_novo:valor, usuario:USER}], {onConflict:'campo,regra,valor_origem'});
+  }
   const registros=[];
   alvos.forEach(it=>{
     it[prop]=valor;
@@ -711,21 +866,37 @@ async function aplicarEmLote(campo, valor, chaves){
     if(campo==='cst') it.cstSug=false;
     if(campo==='cfop_saida') it.cfopSSug=false;
     if(campo==='cfop_entrada') it.cfopESug=false;
+    if(campo==='cest'){ it.cestDivergente=false; it.mva=mvaDoCest(valor); }
     it.status='mem'; it.porMemoria=USER; it.edited=true;
+    TRILHA.push({chave:chaveItem(it), campo:(campo==='cfop_saida'?'cfopS':campo==='cfop_entrada'?'cfopE':campo), valor, por:USER,
+                 quando:new Date().toISOString().slice(0,16).replace('T',' '),
+                 fundamento: it.regra||'', replicado: !pedidas.has(chaveItem(it))});
     registros.push({cliente_id: CLIENTE? CLIENTE.id : null, ncm:it.ncm, descricao_norm:norm(it.desc),
                     campo, valor, usuario:USER, origem:'manual'});
   });
   const {error} = await sb.from('memoria_correcao').upsert(registros, {onConflict:'cliente_id,ncm,descricao_norm,campo'});
-  if(error) toast('Aplicado na tela, mas não gravou na memória: '+error.message);
-  kpis(); tabela(); carregarMemoria();
+  if(error){ toast('Aplicado na tela, mas não gravou na memória: '+error.message); }
+  else { alvos.forEach(it=>{ it.memoriaGravada = {por:USER, quando:new Date().toISOString().slice(0,10), campo}; }); }
+  ULTIMO_LOTE = {replicados:pl.replicados, total:alvos.length};
   return alvos.length;
+}
+
+/* compatibilidade: aplica com prévia */
+async function aplicarEmLote(campo, valor, chaves, replicarFundamento){
+  let pl = planejarLote(campo, valor, chaves, replicarFundamento);
+  if(!pl.mudam.length) return 0;
+  const r = await previa([pl]); if(!r) return 0;
+  if(r==='sem-replicar') pl = planejarLote(campo, valor, chaves, false);
+  const n = await executarLote(pl); kpis(); tabela(); carregarMemoria(); return n;
 }
 $('btnLote').onclick=async()=>{
   const campo=$('loteCampo').value, valor=$('loteValor').value.trim();
   if(!valor){ toast('Informe o valor a aplicar.'); return; }
   const n=await aplicarEmLote(campo, valor, new Set(SELECAO));
+  if(!n){ toast('Nenhuma alteração aplicada.'); return; }
   $('loteValor').value='';
-  toast(`<b>${n}</b> itens atualizados e gravados na memória da equipe.`);
+  const extra = ULTIMO_LOTE.replicados ? ` — incluindo <b>${ULTIMO_LOTE.replicados}</b> por regra de fundamento` : '';
+  toast(`<b>${n}</b> itens atualizados e gravados na memória da equipe${extra}.`);
 };
 
 /* ---------- painel de revisão do item ---------- */
@@ -793,21 +964,33 @@ $('pnAplicar').onclick=async()=>{
   else if(escopo==='ncm') ITENS.filter(x=>x.ncm===it.ncm).forEach(x=>chaves.add(chaveItem(x)));
   else chaves=new Set(SELECAO.size? SELECAO : [chaveItem(it)]);
 
+  const planos=[];
+  if(ESCOLHA.ncm && ESCOLHA.ncm!==it.ncm) planos.push(planejarLote('ncm', ESCOLHA.ncm, chaves, false));
+  if(ESCOLHA.cest) planos.push(planejarLote('cest', ESCOLHA.cest, chaves));
+  if($('pnCt').value!==it.ct) planos.push(planejarLote('cclasstrib', $('pnCt').value, chaves));
+  if($('pnCst').value!==it.cst) planos.push(planejarLote('cst', $('pnCst').value.trim(), chaves));
+  if($('pnCfopS').value!==it.cfopS) planos.push(planejarLote('cfop_saida', $('pnCfopS').value.trim(), chaves));
+  if($('pnCfopE').value!==it.cfopE) planos.push(planejarLote('cfop_entrada', $('pnCfopE').value.trim(), chaves));
+  if(!planos.some(p=>p.mudam.length)){ toast('Nada foi alterado.'); return; }
+  const r = await previa(planos); if(!r) return;
+  if(r==='sem-replicar') for(let k=0;k<planos.length;k++)
+    if(planos[k].campo==='cclasstrib') planos[k]=planejarLote('cclasstrib', planos[k].valor, chaves, false);
   let total=0;
-  if(ESCOLHA.ncm && ESCOLHA.ncm!==it.ncm){
-    const alvos=ITENS.filter(x=>chaves.has(chaveItem(x)));
-    alvos.forEach(x=>{ x.ncm=ESCOLHA.ncm; x.ncmStatus='mem'; x.ncmMsg='NCM definido no painel de revisão';
-      x.st=consultarST(x.ncm,x.desc); x.cest=x.st?x.st.cest:''; x.status='mem'; x.porMemoria=USER; });
-    await sb.from('memoria_correcao').upsert(alvos.map(x=>({cliente_id:CLIENTE?CLIENTE.id:null, ncm:x.ncm,
-      descricao_norm:norm(x.desc), campo:'ncm', valor:ESCOLHA.ncm, usuario:USER, origem:'manual'})),
-      {onConflict:'cliente_id,ncm,descricao_norm,campo'});
-    await carregarTextosOficiais(); total=alvos.length;
+  for(const pl of planos){
+    if(pl.campo==='ncm'){
+      const alvos=pl.mudam;
+      alvos.forEach(x=>{ x.ncm=ESCOLHA.ncm; x.ncmStatus='mem'; x.ncmMsg='NCM definido no painel de revisão';
+        x.st=consultarST(x.ncm,x.desc); x.cest=x.st?x.st.cest:''; x.mva=mvaDoCest(x.cest);
+        const ic=icmsDoItem(x,CLIENTE); x.aliq=ic.aliq; x.redBc=ic.red; x.fundIcms=ic.fund;
+        x.status='mem'; x.porMemoria=USER;
+        TRILHA.push({chave:chaveItem(x), campo:'ncm', valor:ESCOLHA.ncm, por:USER, quando:new Date().toISOString().slice(0,16).replace('T',' '), fundamento:'', replicado:false}); });
+      await sb.from('memoria_correcao').upsert(alvos.map(x=>({cliente_id:CLIENTE?CLIENTE.id:null, ncm:x.ncm,
+        descricao_norm:norm(x.desc), campo:'ncm', valor:ESCOLHA.ncm, usuario:USER, origem:'manual'})),
+        {onConflict:'cliente_id,ncm,descricao_norm,campo'});
+      await carregarTextosOficiais(); total=Math.max(total, alvos.length);
+    } else total=Math.max(total, await executarLote(pl));
   }
-  if(ESCOLHA.cest) total=Math.max(total, await aplicarEmLote('cest', ESCOLHA.cest, chaves));
-  if($('pnCt').value!==it.ct) total=Math.max(total, await aplicarEmLote('cclasstrib', $('pnCt').value, chaves));
-  if($('pnCst').value!==it.cst) total=Math.max(total, await aplicarEmLote('cst', $('pnCst').value.trim(), chaves));
-  if($('pnCfopS').value!==it.cfopS) total=Math.max(total, await aplicarEmLote('cfop_saida', $('pnCfopS').value.trim(), chaves));
-  if($('pnCfopE').value!==it.cfopE) total=Math.max(total, await aplicarEmLote('cfop_entrada', $('pnCfopE').value.trim(), chaves));
+  carregarMemoria();
   fecharPainel(); kpis(); tabela();
   toast(total? `<b>${total}</b> item(ns) atualizado(s) e gravados na memória.` : 'Nada foi alterado.');
 };
@@ -825,7 +1008,11 @@ function destinos(){
     const i=prox++; novas.push([i,titulo]); return i;
   };
   d.ncm   = (MAPA.ncm!==''? +MAPA.ncm : pede('ncm','NCM'));
+  d.cest  = pede('cest','CEST');
   d.cst   = pede('cst','CST/CSOSN ICMS');
+  d.aliq  = pede('aliq','ALÍQUOTA ICMS (%)');
+  d.red   = pede('red','REDUÇÃO BC ICMS (%)');
+  d.mva   = pede('mva','MVA ST (%)');
   d.cfopS = pede('cfopS','CFOP SAÍDA');
   d.cfopE = pede('cfopE','CFOP ENTRADA');
   d.ctCbs = pede('ctCbs','CLASSTRIB CBS');
@@ -881,6 +1068,164 @@ async function caminhoAba(zip){
   return null;
 }
 
+
+/* ---------- abas de transparência: correções aplicadas e resumo ---------- */
+const ROTULO_CAMPO = {ncm:'NCM', cest:'CEST', cst:'CST/CSOSN ICMS', cfopS:'CFOP saída',
+                      aliq:'Alíquota ICMS', red:'Redução BC ICMS',
+                      cfopE:'CFOP entrada', cclasstrib:'cClassTrib IBS/CBS'};
+
+function autoria(chave, campo){
+  for(let k=TRILHA.length-1;k>=0;k--){ const t=TRILHA[k];
+    if(t.chave===chave && t.campo===campo) return t; }
+  return null;
+}
+
+/* o motivo que vai para o cliente: o enquadramento e por onde ele foi alcançado */
+function fundamentoLegivel(it){
+  const partes=[];
+  if(it.ctDesc) partes.push(it.ctDesc);
+  if(it.red && it.red!=='0%') partes.push('redução de '+it.red);
+  if(it.regra && it.regra!=='—') partes.push('posição '+it.regra+' do anexo');
+  if(it.nota) partes.push(it.nota);
+  if(it.conf==='memoria'||it.memoriaGravada) partes.push('decisão registrada na memória da equipe');
+  return partes.join(' · ');
+}
+
+let PREENCHIDOS = {};
+function linhasCorrecao(){
+  const L=[]; PREENCHIDOS = {};
+  const pct=v=>{ const t=String(v).replace('%','').replace(',','.').trim(); const n=parseFloat(t);
+                 return isNaN(n)?t:String(n<=1&&n>0?+(n*100).toFixed(2):+n.toFixed(2)); };
+  const add=(it,campo,de,para,motivo)=>{
+    de=(de==null?'':String(de)).trim(); para=(para==null?'':String(para)).trim();
+    if((campo==='aliq'||campo==='red') && de && para) { de=pct(de); para=pct(para); }
+    if(!para || de===para) return;
+    const t=autoria(chaveItem(it), campo);
+    // campo vazio preenchido pela base vai só para o resumo; decisão da equipe sempre vira linha
+    if(!de && !t && campo!=='cest' && campo!=='ncm'){
+      const rot = ROTULO_CAMPO[campo]||campo; PREENCHIDOS[rot]=(PREENCHIDOS[rot]||0)+1; return; }
+    L.push([ it.i+2+HR, it.desc||'', ROTULO_CAMPO[campo]||campo,
+             de||'(em branco)', para, motivo||'',
+             t ? (t.replicado?'replicado por fundamento':'corrigido pela equipe')
+               : 'automático pela base oficial',
+             t ? (t.por||'') : '', t ? (t.quando||'') : '' ]);
+  };
+  ITENS.forEach(it=>{
+    add(it,'ncm',        it.ncmOrig,  it.ncm,  it.ncmMsg||'');
+    add(it,'cest',       it.cestOrig, it.cest, it.st? (it.st.fundamento||'') : '');
+    add(it,'cst',        it.cstOrig,  it.cst,  it.notaFiscal||'');
+    add(it,'cfopE',      '',          it.cfopE, it.notaFiscal||'');
+    add(it,'cfopS',      it.cfopSOrig,it.cfopS,'');
+    add(it,'aliq',       it.aliqOrig, it.aliq, it.fundIcms||'');
+    add(it,'red',        '',          it.redBc, it.fundIcms||'');
+    add(it,'cclasstrib', it.ctOrig,   it.ct,   fundamentoLegivel(it));
+  });
+  return L;
+}
+
+function abaCorrecoes(){
+  const L=linhasCorrecao();
+  const m=[['CORREÇÕES APLICADAS NO CADASTRO'],
+           ['Arquivo: '+RAWNAME+(CLIENTE?('  ·  Cliente: '+CLIENTE.nome+' ('+CLIENTE.uf+')'):'')
+            +'  ·  Gerado em '+new Date().toLocaleString('pt-BR')],
+           [],
+           ['Linha','Produto','Campo','De','Para','Fundamento / motivo','Origem da correção','Responsável','Data']];
+  if(!L.length) m.push(['—','Nenhum campo do cadastro precisou de correção.','','','','','','','']);
+  return m.concat(L);
+}
+
+function abaResumo(){
+  const L=linhasCorrecao();
+  const porCampo=new Map(); L.forEach(r=>porCampo.set(r[2],(porCampo.get(r[2])||0)+1));
+  const porOrigem=new Map(); L.forEach(r=>porOrigem.set(r[6],(porOrigem.get(r[6])||0)+1));
+  const porSit=new Map(); ITENS.forEach(i=>porSit.set(i.status,(porSit.get(i.status)||0)+1));
+  const m=[['RESUMO DA CONFERÊNCIA'],
+    ['Arquivo: '+RAWNAME+(CLIENTE?('  ·  Cliente: '+CLIENTE.nome+' ('+CLIENTE.uf+')  ·  Regime: '+(CLIENTE.regime||'—')):'')],
+    ['Gerado em '+new Date().toLocaleString('pt-BR')+' por '+USER],
+    [],
+    ['Itens analisados', ITENS.length],
+    ['Campos corrigidos', L.length],
+    ['Itens que vieram da memória da equipe', ITENS.filter(i=>i.memoriaGravada).length],
+    ['Itens que seguem pendentes de revisão', ITENS.filter(i=>i.status==='rev'||i.ncmStatus==='erro').length],
+    [],
+    ['CORREÇÕES POR CAMPO','']];
+  [...porCampo.entries()].sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>m.push([k,v]));
+  if(Object.keys(PREENCHIDOS).length){
+    m.push([], ['CAMPOS PREENCHIDOS (estavam em branco na planilha)','']);
+    Object.entries(PREENCHIDOS).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>m.push([k,v]));
+  }
+  m.push([], ['CORREÇÕES POR ORIGEM','']);
+  [...porOrigem.entries()].sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>m.push([k,v]));
+  m.push([], ['ITENS POR SITUAÇÃO','']);
+  [...porSit.entries()].forEach(([k,v])=>m.push([(SIT[k]?SIT[k][1]:k),v]));
+  m.push([], ['Base legal do enquadramento IBS/CBS: LC 214/2025 e anexos; NCM conforme TIPI vigente'],
+            ['Substituição tributária e CEST conforme anexo do RICMS da UF do cliente'],
+            ['Este resumo é gerado pela ferramenta e não substitui a conferência final do responsável técnico']);
+  return m;
+}
+
+/* injeta uma aba nova no arquivo original, sem formatação, sem mexer nas abas do cliente */
+const xmlEsc = v => String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                                        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+async function anexarAba(zip, nome, matriz){
+  const dp=new DOMParser(), ser=new XMLSerializer();
+  const ctf=zip.file('[Content_Types].xml'), wbf=zip.file('xl/workbook.xml'),
+        rlf=zip.file('xl/_rels/workbook.xml.rels');
+  if(!ctf||!wbf||!rlf) throw new Error('estrutura do arquivo não permite anexar abas');
+  const ct=dp.parseFromString(await ctf.async('string'),'application/xml');
+  const wb=dp.parseFromString(await wbf.async('string'),'application/xml');
+  const rl=dp.parseFromString(await rlf.async('string'),'application/xml');
+
+  let n=1; while(zip.file('xl/worksheets/sheet'+n+'.xml')) n++;
+  const alvo='xl/worksheets/sheet'+n+'.xml';
+  const rs=rl.getElementsByTagName('Relationship');
+  let maxR=0; for(let k=0;k<rs.length;k++){ const m=/^rId(\d+)$/.exec(rs[k].getAttribute('Id')||''); if(m) maxR=Math.max(maxR,+m[1]); }
+  const rid='rId'+(maxR+1);
+  const shs=wb.getElementsByTagName('sheet');
+  let maxId=0, nomes=[]; for(let k=0;k<shs.length;k++){ maxId=Math.max(maxId,+(shs[k].getAttribute('sheetId')||0));
+    nomes.push(shs[k].getAttribute('name')); }
+  let titulo=nome.slice(0,31), t=2; while(nomes.includes(titulo)) titulo=(nome.slice(0,28)+' '+t++);
+
+  const linhas=matriz.map((r,i)=>'<row r="'+(i+1)+'">'+ (r||[]).map((v,j)=>{
+      if(v===''||v===null||v===undefined) return '';
+      const ref=colL(j)+(i+1);
+      return (typeof v==='number')
+        ? '<c r="'+ref+'"><v>'+v+'</v></c>'
+        : '<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+xmlEsc(v)+'</t></is></c>';
+    }).join('') +'</row>').join('');
+  const larg=Math.max(1,...matriz.map(r=>(r||[]).length));
+  zip.file(alvo, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    +'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    +'<dimension ref="A1:'+colL(larg-1)+Math.max(1,matriz.length)+'"/>'
+    +'<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+    +'<sheetFormatPr defaultRowHeight="15"/>'
+    +'<cols><col min="1" max="1" width="9"/><col min="2" max="2" width="46"/>'
+    +'<col min="3" max="3" width="22"/><col min="4" max="5" width="18"/>'
+    +'<col min="6" max="6" width="52"/><col min="7" max="7" width="26"/>'
+    +'<col min="8" max="9" width="20"/></cols>'
+    +'<sheetData>'+linhas+'</sheetData></worksheet>');
+
+  const sEl=wb.createElementNS(wb.documentElement.namespaceURI,'sheet');
+  sEl.setAttribute('name',titulo); sEl.setAttribute('sheetId',String(maxId+1));
+  sEl.setAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','r:id',rid);
+  wb.getElementsByTagName('sheets')[0].appendChild(sEl);
+  zip.file('xl/workbook.xml', ser.serializeToString(wb));
+
+  const rEl=rl.createElementNS(rl.documentElement.namespaceURI,'Relationship');
+  rEl.setAttribute('Id',rid);
+  rEl.setAttribute('Type','http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
+  rEl.setAttribute('Target','worksheets/sheet'+n+'.xml');
+  rl.documentElement.appendChild(rEl);
+  zip.file('xl/_rels/workbook.xml.rels', ser.serializeToString(rl));
+
+  const oEl=ct.createElementNS(ct.documentElement.namespaceURI,'Override');
+  oEl.setAttribute('PartName','/'+alvo);
+  oEl.setAttribute('ContentType','application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+  ct.documentElement.appendChild(oEl);
+  zip.file('[Content_Types].xml', ser.serializeToString(ct));
+  return titulo;
+}
+
 $('btnExportar').onclick = async ()=>{
   if(!ITENS.length){ toast('Nada para exportar.'); return; }
   if(/\.(xlsx|xlsm)$/i.test(RAWNAME) && typeof JSZip!=='undefined'){
@@ -896,7 +1241,11 @@ $('btnExportar').onclick = async ()=>{
       for(const it of ITENS){
         const L=HR+2+it.i;
         gravar(doc,sd,idx,L,d.ncm,   it.ncm);
+        gravar(doc,sd,idx,L,d.cest,  it.cest);
         gravar(doc,sd,idx,L,d.cst,   it.cst);
+        gravar(doc,sd,idx,L,d.aliq,  it.aliq);
+        gravar(doc,sd,idx,L,d.red,   it.redBc);
+        gravar(doc,sd,idx,L,d.mva,   it.mva);
         gravar(doc,sd,idx,L,d.cfopS, it.cfopS);
         gravar(doc,sd,idx,L,d.cfopE, it.cfopE);
         gravar(doc,sd,idx,L,d.ctCbs, it.ct);
@@ -911,8 +1260,15 @@ $('btnExportar').onclick = async ()=>{
       if(dim){ const m=(dim.getAttribute('ref')||'').match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
         if(m){ const max=Math.max(colI(m[3]), ...Object.values(d)); dim.setAttribute('ref', m[1]+m[2]+':'+colL(max)+m[4]); } }
       zip.file(path, new XMLSerializer().serializeToString(doc));
+      let nCorr=0;
+      try{
+        const corr=abaCorrecoes(); nCorr=Math.max(0,corr.length-4);
+        await anexarAba(zip,'CORREÇÕES APLICADAS',corr);
+        await anexarAba(zip,'RESUMO DA CONFERÊNCIA',abaResumo());
+      }catch(e){ console.warn('abas de transparência:',e); }
       baixar(await zip.generateAsync({type:'blob'}), RAWNAME.replace(/\.(xlsx|xlsm)$/i,'')+'_preenchida.xlsx');
-      toast(`Planilha exportada com <b>${ITENS.length}</b> itens preenchidos, mantendo a formatação original.`);
+      toast(`Planilha exportada com <b>${ITENS.length}</b> itens preenchidos, mantendo a formatação original`
+            + (nCorr? `, e uma aba com as <b>${nCorr}</b> correções aplicadas.` : '.'));
       return;
     }catch(err){ console.warn(err); toast('Não consegui preservar a formatação — exportando em formato simples.'); }
   }
@@ -921,13 +1277,17 @@ $('btnExportar').onclick = async ()=>{
   novas.forEach(([c,t])=>{ aoa[HR][c]=t; });
   ITENS.forEach(it=>{ const row=aoa[HR+1+it.i]; if(!row) return;
     while(row.length<=Math.max(...Object.values(d))) row.push('');
-    row[d.ncm]=it.ncm; row[d.cst]=it.cst; row[d.cfopS]=it.cfopS; row[d.cfopE]=it.cfopE;
+    row[d.ncm]=it.ncm; row[d.cest]=it.cest||''; row[d.cst]=it.cst; row[d.cfopS]=it.cfopS; row[d.cfopE]=it.cfopE;
+    row[d.aliq]=it.aliq||''; row[d.red]=it.redBc||''; row[d.mva]=it.mva||'';
     row[d.ctCbs]=it.ct; row[d.dsCbs]=it.ctDesc; row[d.cstCbs]=it.cstTrib;
     row[d.ctIbs]=it.ct; row[d.dsIbs]=it.ctDesc; row[d.cstIbs]=it.cstTrib; });
   const wb2=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(aoa), SHEET);
+  const corr=abaCorrecoes();
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(corr), 'CORREÇÕES APLICADAS');
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(abaResumo()), 'RESUMO DA CONFERÊNCIA');
   baixar(new Blob([XLSX.write(wb2,{bookType:'xlsx',type:'array'})],{type:'application/octet-stream'}),
          (RAWNAME.replace(/\.[^.]+$/,'')||'planilha')+'_preenchida.xlsx');
-  toast(`Planilha exportada com <b>${ITENS.length}</b> itens preenchidos.`);
+  toast(`Planilha exportada com <b>${ITENS.length}</b> itens preenchidos e <b>${Math.max(0,corr.length-4)}</b> correções registradas.`);
 };
 
 $('btnCsv').onclick=()=>{

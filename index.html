@@ -322,6 +322,7 @@
         <option value="selecao">os itens selecionados na lista</option>
       </select>
       <button class="btn primary w100" id="pnAplicar">Aplicar</button>
+      <p class="muted" id="pnAvisoMemoria">A decisão é gravada na memória da equipe, com seu nome e a data, e passa a valer nas próximas planilhas.</p>
     </footer>
   </aside>
 </div>
@@ -330,5 +331,28 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
 <script src="app.js"></script>
+
+<!-- prévia antes de aplicar: nada é gravado sem confirmação -->
+<div id="previa" class="previa" hidden role="dialog" aria-modal="true" aria-labelledby="pvTitulo">
+  <div class="previa-fundo"></div>
+  <div class="previa-caixa">
+    <h3 id="pvTitulo">Aplicar?</h3>
+    <p id="pvResumo" class="pv-resumo"></p>
+    <div class="pv-tabela"><table>
+      <thead><tr><th>Produto</th><th>Campo</th><th>De</th><th>Para</th></tr></thead>
+      <tbody id="pvLinhas"></tbody>
+    </table></div>
+    <p id="pvMais" class="muted"></p>
+    <label class="pv-replicar" id="pvReplicarBox" hidden>
+      <input type="checkbox" id="pvReplicar" checked>
+      <span>Replicar pela mesma regra de fundamento — alcança <b id="pvReplicarN">0</b> agora e passa a valer nas próximas planilhas</span>
+    </label>
+    <p id="pvMemoria" class="muted pv-memoria">Ao confirmar, a decisão é gravada na memória da equipe com seu nome e a data, e passa a valer nas próximas planilhas.</p>
+    <div class="pv-acoes">
+      <button class="btn" id="pvCancelar">Cancelar</button>
+      <button class="btn primary" id="pvConfirmar">Aplicar</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
