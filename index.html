@@ -100,7 +100,26 @@
 
       <details class="passo dobra" id="p2" hidden>
         <summary><b>2</b> Mapeamento de colunas <span class="resumo" id="mapOrigem"></span></summary>
+        <div class="linha-aba">
+          <label class="f" for="selAba">Aba com o cadastro</label>
+          <select id="selAba"></select>
+          <span class="muted">O cabeçalho é localizado em qualquer linha e coluna. Campos que a planilha não tem são criados depois da última coluna do cliente.</span>
+        </div>
         <div class="grid" id="mapGrid"></div>
+        <fieldset class="escopo">
+          <legend>O que corrigir</legend>
+          <div class="escopo-itens">
+            <label><input type="checkbox" id="opNcm" checked> NCM</label>
+            <label><input type="checkbox" id="opCest" checked> CEST e substituição tributária</label>
+            <label><input type="checkbox" id="opIcms" checked> CST, alíquota e redução de ICMS</label>
+            <label><input type="checkbox" id="opIbs" checked> cClassTrib e CST de IBS/CBS</label>
+            <label><input type="checkbox" id="opCfop" checked> CFOP</label>
+          </div>
+          <div class="escopo-modo">
+            <label><input type="radio" name="opModo" value="corrigir" checked> Preencher o que está vazio e corrigir o que está errado</label>
+            <label><input type="radio" name="opModo" value="vazios"> Só preencher o que está vazio — não mexe no que o cliente já preencheu</label>
+          </div>
+        </fieldset>
         <div class="bar">
           <button class="btn primary" id="btnRodar">Preencher planilha</button>
           <button class="btn quiet" id="btnSalvarMapa">Salvar mapeamento deste cliente</button>

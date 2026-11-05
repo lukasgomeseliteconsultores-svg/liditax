@@ -536,28 +536,65 @@ function lerArquivo(f){
   rd.onload=async ev=>{
     RAW=ev.target.result.slice(0); RAWNAME=f.name;
     WB=XLSX.read(new Uint8Array(ev.target.result),{type:'array'});
-    SHEET = WB.SheetNames[0];
-    const aoa=XLSX.utils.sheet_to_json(WB.Sheets[SHEET],{header:1,defval:''});
-    HR=0; for(let i=0;i<Math.min(aoa.length,10);i++){ if((aoa[i]||[]).filter(c=>typeof c==='string'&&c.trim()).length>=3){HR=i;break;} }
-    HEADERS=(aoa[HR]||[]).map((h,i)=>(h+'').trim()||('Coluna '+XLSX.utils.encode_col(i)));
-    await montarMapa();
+    // a aba de cadastro é a que tem o cabeçalho mais reconhecível, não necessariamente a primeira
+    const notas = WB.SheetNames.map(n=>({n, ...acharCabecalho(lerAba(n))}));
+    const melhor = notas.slice().sort((a,b)=>b.p-a.p)[0] || {n:WB.SheetNames[0]};
+    $('selAba').innerHTML = WB.SheetNames.map(n=>`<option value="${esc(n)}" ${n===melhor.n?'selected':''}>${esc(n)}</option>`).join('');
+    await escolherAba(melhor.n);
     $('p2').hidden=false; $('p2').open=true; $('p1').open=false;
     $('resumoArq').textContent = RAWNAME;
-    $('infoArq').textContent = `${aoa.length-HR-1} linhas · ${HEADERS.length} colunas · aba "${SHEET}"`;
-    $('mapOrigem').textContent = CLIENTE && MAPA.__salvo ? '— mapeamento salvo deste cliente' : '— detectado automaticamente';
   };
   rd.readAsArrayBuffer(f);
 }
 
+/* lê a aba em coordenadas absolutas: índice 0 é sempre a linha 1 e a coluna A,
+   não importa onde a planilha do cliente começa */
+function lerAba(nome){
+  const ws = WB && WB.Sheets[nome]; if(!ws || !ws['!ref']) return [];
+  const r = XLSX.utils.decode_range(ws['!ref']); r.s.r=0; r.s.c=0;
+  return XLSX.utils.sheet_to_json(ws,{header:1, defval:'', blankrows:true, range:r});
+}
+/* o cabeçalho é a linha que mais parece cabeçalho: nomes de campo fiscais conhecidos,
+   texto, e nenhum código numérico longo (que indica linha de produto) */
+const PISTAS = ['ncm','cest','cst','csosn','cfop','descricao','produto','mercadoria','codigo','cod','ean','gtin','barras',
+                'unidade','und','un','aliquota','aliq','icms','ipi','pis','cofins','classtrib','cclasstrib','preco','valor','referencia','item','origem','mva'];
+function pontuarLinha(r){
+  let pistas=0, texto=0, numeros=0;
+  (r||[]).forEach(c=>{
+    const t = String(c).trim(); if(!t) return;
+    if(/^\d{6,}$/.test(t.replace(/\./g,''))) numeros++;
+    const n = norm(t); if(/[a-z]/.test(n)) texto++;
+    const pal = n.split(/[^a-z0-9]+/).filter(Boolean);
+    if(PISTAS.some(k=>pal.includes(k))) pistas++;
+  });
+  return pistas*10 + Math.min(texto,6) - numeros*4;
+}
+function acharCabecalho(aoa){
+  let m = {i:0, p:-99};
+  for(let i=0;i<Math.min(aoa.length,300);i++){ const p=pontuarLinha(aoa[i]); if(p>m.p) m={i,p}; }
+  return m;
+}
+async function escolherAba(nome){
+  SHEET = nome;
+  const aoa = lerAba(SHEET);
+  HR = acharCabecalho(aoa).i;
+  const larg = Math.max(...aoa.slice(HR, HR+50).map(r=>r.length), 1);
+  HEADERS = Array.from({length:larg}, (_,i)=>{ const h=String((aoa[HR]||[])[i]??'').trim(); return h; });
+  await montarMapa();
+  const ini = HEADERS.findIndex(h=>h); const col = XLSX.utils.encode_col(Math.max(ini,0));
+  $('infoArq').textContent = `${aoa.length-HR-1} linhas · cabeçalho na linha ${HR+1}, a partir da coluna ${col} · aba "${SHEET}"`;
+  $('mapOrigem').textContent = CLIENTE && MAPA.__salvo ? '— mapeamento salvo deste cliente' : '— detectado automaticamente';
+}
+
 const CAMPOS = [
-  ['desc',  'Descrição do produto', ['produto','descricao','descrição','item','mercadoria']],
-  ['ncm',   'NCM',                  ['ncm']],
+  ['desc',  'Descrição do produto', ['descricao','descrição','produto','mercadoria','nome','item']],
+  ['ncm',   'NCM',                  ['ncm','classificacao fiscal','classificação fiscal']],
   ['cest',  'CEST',                 ['cest']],
   ['red',   'Redução BC ICMS (%)',  ['reducao bc','redução bc','% reducao','% redução','red bc']],
   ['mva',   'MVA ST (%)',           ['mva']],
   ['valor', 'Valor de venda',       ['valor','preco','preço','venda']],
-  ['cst',   'CST/CSOSN ICMS',       ['cst/csosn','csosn','cst icms']],
-  ['aliq',  'Alíquota ICMS',        ['aliquota icms','alíquota icms']],
+  ['cst',   'CST/CSOSN ICMS',       ['cst/csosn','csosn','cst icms','cst','situacao tributaria','situação tributária']],
+  ['aliq',  'Alíquota ICMS',        ['aliquota icms','alíquota icms','aliq icms','% icms','icms %','aliquota','alíquota','aliq']],
   ['cfopS', 'CFOP saída',           ['cfop saida','cfop saída']],
   ['cfopE', 'CFOP entrada',         ['cfop entrada']],
   ['ctCbs', 'cClassTrib CBS',       ['classtrib cbs']],
@@ -576,21 +613,26 @@ async function montarMapa(){
       if(salvo && salvo.__headers===HEADERS.join('|')){ MAPA={...salvo,__salvo:true}; }
     }catch(e){}
   }
-  const nh=HEADERS.map(norm);
+  const nh=HEADERS.map(h=>norm(h||''));
+  const NAO = {desc:['classtrib','cst','cfop','ncm','cest','cod'], cst:['ibs','cbs','pis','cofins','ipi'],
+    valor:['icms','ipi'], aliq:['ipi','pis','cofins','ibs','cbs','mva','reduc','icms st','interestad','fcp']};
   CAMPOS.forEach(([k,,alvos])=>{
     if(MAPA[k]!==undefined) return;
-    let i=nh.findIndex(h=>alvos.some(a=>h===norm(a)));
-    if(i<0) i=nh.findIndex(h=>alvos.some(a=>h.includes(norm(a))));
+    const pode = h=>h && !(NAO[k]||[]).some(x=>h.includes(x));
+    let i=nh.findIndex(h=>pode(h) && alvos.some(a=>h===norm(a)));
+    if(i<0) i=nh.findIndex(h=>pode(h) && alvos.some(a=>h.includes(norm(a))));
     MAPA[k]= i>=0? i : '';
   });
   $('mapGrid').innerHTML = CAMPOS.map(([k,rot])=>`
     <div><label class="f">${rot}</label>
       <select data-campo="${k}">
         <option value="">— não usar —</option>
-        ${HEADERS.map((h,i)=>`<option value="${i}" ${String(MAPA[k])===String(i)?'selected':''}>${esc(h)}</option>`).join('')}
+        ${HEADERS.map((h,i)=>h?`<option value="${i}" ${String(MAPA[k])===String(i)?'selected':''}>${esc(h)} (${XLSX.utils.encode_col(i)})</option>`:'').join('')}
       </select></div>`).join('');
   $('mapGrid').querySelectorAll('select').forEach(s=>s.onchange=()=>{ MAPA[s.dataset.campo]= s.value===''?'':+s.value; });
 }
+
+$('selAba').onchange = e=>escolherAba(e.target.value);
 
 $('btnSalvarMapa').onclick = async ()=>{
   if(!CLIENTE){ toast('Selecione o cliente antes de salvar o mapeamento.'); return; }
@@ -608,16 +650,38 @@ $('selCliente').onchange = async e=>{
 
 $('btnRodar').onclick = ()=>{
   if(MAPA.ncm==='' || MAPA.ncm===undefined){ toast('Indique a coluna de NCM.'); return; }
-  const aoa=XLSX.utils.sheet_to_json(WB.Sheets[SHEET],{header:1,defval:''});
+  const aoa=lerAba(SHEET);
+  ESCOPO = lerEscopo();
   ITENS=[];
-  aoa.slice(HR+1).forEach((r,idx)=>{
+  // NCM do mesmo produto em outra linha: preenche quem veio em branco
+  const ncmPorDesc = new Map();
+  if(MAPA.desc!=='' && MAPA.desc!==undefined) aoa.slice(HR+1).forEach(r=>{
+    const d=norm(String(r[MAPA.desc]||'')), n=dig(r[MAPA.ncm]);
+    if(d && n.length===8 && (TIPI.size<8000 || TIPI.has(n))){ const c=ncmPorDesc.get(d)||new Map(); c.set(n,(c.get(n)||0)+1); ncmPorDesc.set(d,c); }
+  });
+  const cabecalhoTxt = (aoa[HR]||[]).map(c=>norm(String(c))).join('|');
+  aoa.slice(HR+1).forEach((r,k)=>{
+    const idx = HR+1+k;                                   // linha absoluta (0 = linha 1 do Excel)
     if(!r.some(c=>(c+'').trim()!=='')) return;
-    const bruto = r[MAPA.ncm];
-    if((bruto+'').trim()==='') return;
-    const v = validarNcm(bruto);
+    if(r.map(c=>norm(String(c))).join('|')===cabecalhoTxt) return;   // cabeçalho repetido
+    const descLinha = MAPA.desc!=='' ? String(r[MAPA.desc]||'').trim() : '';
+    let bruto = r[MAPA.ncm];
+    if((bruto+'').trim()==='' && !descLinha) return;
+    let v = validarNcm(bruto);
+    if(!dig(bruto) && descLinha && ESCOPO.ncm){
+      const c = ncmPorDesc.get(norm(descLinha));
+      if(c){ const n=[...c.entries()].sort((a,b)=>b[1]-a[1])[0][0];
+        v = {ncm:n, status:'rev', msg:'NCM em branco — preenchido com o NCM do mesmo produto em outra linha da planilha'}; }
+    } else if(v.status==='err' && v.ncm.length===8 && TIPI.size>8000){
+      // NCM inexistente: só sugere quando a subposição tem um único código válido
+      const irmaos=[...TIPI].filter(t=>t.length===8 && t.startsWith(v.ncm.slice(0,6)));
+      if(irmaos.length===1) v = {ncm:irmaos[0], status:'rev', ncmTroca:v.ncm,
+        msg:`NCM ${v.ncm} não existe na TIPI; a subposição ${v.ncm.slice(0,4)}.${v.ncm.slice(4,6)} tem um único código válido (${irmaos[0]}) — confirme`};
+    }
+    if(!ESCOPO.ncm){ v = {...v, ncm: dig(bruto).length===8 ? dig(bruto) : v.ncm}; }
     const item = {
       i:idx,
-      desc: MAPA.desc!=='' ? (r[MAPA.desc]+'').trim() : '',
+      desc: descLinha,
       ncmOrig: (bruto+'').trim(),
       ncm: v.ncm, ncmStatus: v.status, ncmMsg: v.msg,
       cestOrig: MAPA.cest!=='' ? (r[MAPA.cest]+'').trim() : '',
@@ -651,10 +715,23 @@ $('btnRodar').onclick = ()=>{
     item.aliqOrig = MAPA.aliq!=='' && MAPA.aliq!==undefined ? (r[MAPA.aliq]+'').trim() : '';
     item.mva = mvaDoCest(item.cest);
     const f = fiscalPorRegime(item, CLIENTE);
-    item.cst = item.cstOrig || f.cst;  item.cstSug = !item.cstOrig;
+    if(item.st && !ehIndustria(CLIENTE)){
+      // comércio com ST: o ICMS foi retido antes; não há destaque de alíquota no cadastro
+      item.aliq=''; item.redBc='';
+      item.fundIcms='Substituição tributária: ICMS retido anteriormente, sem destaque na saída — '+(item.st.fundamento||'Anexo 007 do RICMS/RN');
+    }
+    const cstCalc = comOrigem(f.cst, item.cstOrig, CLIENTE);
+    item.cst = (ESCOPO.modo==='corrigir' && ESCOPO.icms) ? cstCalc : (item.cstOrig || cstCalc);
+    item.cstSug = !item.cstOrig;
     item.cfopS = item.cfopSOrig || f.cfopS; item.cfopSSug = !item.cfopSOrig;
     item.cfopE = f.cfopE; item.cfopESug = true;   // vazio em toda a planilha: sempre sugestão
     item.notaFiscal = f.nota;
+    if(dig(item.ncm).length!==8){
+      // sem NCM válido não há base para enquadrar: nada é preenchido, o item vai para conferência
+      Object.assign(item,{aliq:'',redBc:'',mva:'',cest:'',ct:'',cstTrib:'',ctDesc:'',cfopS:item.cfopSOrig,cfopE:'',
+        cst:item.cstOrig, fundIcms:'', ncmStatus:'err'});
+      item.nota=[item.nota,'Sem NCM válido: ICMS, CFOP e IBS/CBS não foram preenchidos'].filter(Boolean).join(' · ');
+    }
     item.status = item.ncmStatus==='err' ? 'err'
                 : (item.confIbs==='rev' || item.cstSug || item.ncmStatus==='rev'
                    || item.cestDivergente || (item.st && !item.st.confirmado)) ? 'rev' : 'ok';
@@ -909,7 +986,7 @@ function abrirPainel(chave){
   const it=ITENS.find(x=>chaveItem(x)===chave); if(!it) return;
   ITEM_PAINEL=it; ESCOLHA={ncm:null, cest:null};
   $('pnProduto').textContent=it.desc||'(sem descrição)';
-  $('pnLinha').textContent=`linha ${it.i+2+HR}${it.sheet?' · aba '+it.sheet:''}${it.valor?' · valor '+it.valor.toFixed(2):''}`;
+  $('pnLinha').textContent=`linha ${it.i+1}${it.sheet?' · aba '+it.sheet:''}${it.valor?' · valor '+it.valor.toFixed(2):''}`;
   $('pnNcm').textContent=it.ncm||'—';
   $('pnNcmTexto').textContent=(it.ncmTexto||'').replace(/<[^>]+>/g,'').slice(0,180);
   $('pnBuscaNcm').value=it.desc||'';
@@ -1000,14 +1077,28 @@ $('pnAplicar').onclick=async()=>{
 const colL = n => { let s=''; n++; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=(n-1-m)/26; } return s; };
 const colI = ref => { let n=0; for(const ch of ref.replace(/\d+/g,'')) n=n*26+(ch.charCodeAt(0)-64); return n-1; };
 
+function colunaTemFormula(col){
+  const ws = WB.Sheets[SHEET]; let n=0;
+  for(const it of ITENS){ const c = ws[XLSX.utils.encode_cell({r:it.i, c:col})]; if(c && c.f) return true; if(++n>400) break; }
+  return false;
+}
 function destinos(){
-  // grava sempre nas colunas mapeadas; cria no fim as que o cliente não tem
-  let prox = HEADERS.length; const d={}; const novas=[];
+  // grava nas colunas que o cliente já tem; o que falta é criado depois da última coluna dele
+  const ws = WB.Sheets[SHEET];
+  const fimCliente = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).e.c + 1 : HEADERS.length;
+  let prox = Math.max(HEADERS.length, fimCliente); const d={}; const novas=[];
+  const ATIVO = {ncm:'ncm', cest:'cest', mva:'cest', cst:'icms', aliq:'icms', red:'icms', cfopS:'cfop', cfopE:'cfop',
+                 ctCbs:'ibs', dsCbs:'ibs', cstCbs:'ibs', ctIbs:'ibs', dsIbs:'ibs', cstIbs:'ibs'};
   const pede = (chave, titulo)=>{
-    if(MAPA[chave]!=='' && MAPA[chave]!==undefined) return +MAPA[chave];
+    if(ESCOPO[ATIVO[chave]]===false) return undefined;
+    if(MAPA[chave]!=='' && MAPA[chave]!==undefined){
+      const c=+MAPA[chave];
+      if(!colunaTemFormula(c)) return c;
+      titulo = titulo+' CORRIGIDO';          // coluna do cliente é fórmula (PROCV etc.): não sobrescreve
+    }
     const i=prox++; novas.push([i,titulo]); return i;
   };
-  d.ncm   = (MAPA.ncm!==''? +MAPA.ncm : pede('ncm','NCM'));
+  d.ncm   = pede('ncm','NCM');
   d.cest  = pede('cest','CEST');
   d.cst   = pede('cst','CST/CSOSN ICMS');
   d.aliq  = pede('aliq','ALÍQUOTA ICMS (%)');
@@ -1029,8 +1120,10 @@ function indexar(sheetData){
   for(let k=0;k<rows.length;k++){ const rn=+(rows[k].getAttribute('r')||(k+1)); byRow.set(rn,{el:rows[k],cells:null}); nums.push(rn); }
   return {byRow,nums};
 }
-function gravar(doc, sheetData, idx, linha, col, texto){
-  if(texto===undefined||texto===null||texto==='') return;
+let FORMULAS_PRESERVADAS = 0;
+function gravar(doc, sheetData, idx, linha, col, texto, limpar){
+  const vazio = texto===undefined||texto===null||texto==='';
+  if(vazio && !limpar) return;
   const NS=doc.documentElement.namespaceURI, ref=colL(col)+linha;
   let e=idx.byRow.get(linha);
   if(!e){ const row=doc.createElementNS(NS,'row'); row.setAttribute('r',String(linha));
@@ -1039,6 +1132,8 @@ function gravar(doc, sheetData, idx, linha, col, texto){
   if(!e.cells){ e.cells=new Map(); const cs=e.el.getElementsByTagName('c');
     for(let k=0;k<cs.length;k++) e.cells.set(colI(cs[k].getAttribute('r')||''), cs[k]); }
   let cell=e.cells.get(col);
+  if(cell && cell.getElementsByTagName('f').length){ FORMULAS_PRESERVADAS++; return; }   // fórmula do cliente fica
+  if(vazio){ if(cell){ while(cell.firstChild) cell.removeChild(cell.firstChild); cell.removeAttribute('t'); } return; }
   if(!cell){ cell=doc.createElementNS(NS,'c'); cell.setAttribute('r',ref);
     let bc=null; const cs=e.el.getElementsByTagName('c');
     for(let k=0;k<cs.length;k++){ if(colI(cs[k].getAttribute('r')||'')>col){ bc=cs[k]; break; } }
@@ -1092,6 +1187,28 @@ function fundamentoLegivel(it){
 }
 
 let PREENCHIDOS = {};
+/* o que o usuário pediu para corrigir, e como */
+let ESCOPO = {ncm:true, cest:true, icms:true, ibs:true, cfop:true, modo:'corrigir'};
+function lerEscopo(){
+  const ck = id=>{ const e=$(id); return e ? e.checked : true; };
+  const m = document.querySelector('input[name="opModo"]:checked');
+  return {ncm:ck('opNcm'), cest:ck('opCest'), icms:ck('opIcms'), ibs:ck('opIbs'), cfop:ck('opCfop'),
+          modo: m ? m.value : 'corrigir'};
+}
+const GRUPO_CAMPO = {ncm:'ncm', cest:'cest', mva:'cest', cst:'icms', aliq:'icms', red:'icms',
+                     cfopS:'cfop', cfopE:'cfop', cclasstrib:'ibs'};
+/* indústria (CNAE divisões 10 a 33) destaca ICMS próprio mesmo com ST; comércio não */
+function ehIndustria(cliente){
+  const c = dig((cliente && cliente.cnae_principal) || ''); const div = +c.slice(0,2);
+  return div>=10 && div<=33;
+}
+/* regime normal: mantém o dígito de origem que o cliente já usava (1xx importado etc.) */
+function comOrigem(cst, cstOrig, cliente){
+  const simples = cliente && (cliente.regime==='simples' || cliente.opcao_simples);
+  if(simples) return cst;
+  const d = dig(cstOrig||''); const origem = d.length===3 ? d[0] : '0';
+  return origem + String(cst).slice(-2);
+}
 function linhasCorrecao(){
   const L=[]; PREENCHIDOS = {};
   const pct=v=>{ const t=String(v).replace('%','').replace(',','.').trim(); const n=parseFloat(t);
@@ -1100,11 +1217,16 @@ function linhasCorrecao(){
     de=(de==null?'':String(de)).trim(); para=(para==null?'':String(para)).trim();
     if((campo==='aliq'||campo==='red') && de && para) { de=pct(de); para=pct(para); }
     if(!para || de===para) return;
+    const grupo = GRUPO_CAMPO[campo]; if(grupo && !ESCOPO[grupo]) return;
+    if(ESCOPO.modo==='vazios' && de && de!=='(em branco)'){
+      // modo "só vazios": o valor do cliente foi mantido, mas a divergência fica registrada para conferência
+      L.push([ it.i+1, it.desc||'', ROTULO_CAMPO[campo]||campo, de, para, motivo||'',
+               'divergente — NÃO alterado (modo só preencher vazios)', '', '' ]); return; }
     const t=autoria(chaveItem(it), campo);
     // campo vazio preenchido pela base vai só para o resumo; decisão da equipe sempre vira linha
     if(!de && !t && campo!=='cest' && campo!=='ncm'){
       const rot = ROTULO_CAMPO[campo]||campo; PREENCHIDOS[rot]=(PREENCHIDOS[rot]||0)+1; return; }
-    L.push([ it.i+2+HR, it.desc||'', ROTULO_CAMPO[campo]||campo,
+    L.push([ it.i+1, it.desc||'', ROTULO_CAMPO[campo]||campo,
              de||'(em branco)', para, motivo||'',
              t ? (t.replicado?'replicado por fundamento':'corrigido pela equipe')
                : 'automático pela base oficial',
@@ -1116,7 +1238,7 @@ function linhasCorrecao(){
     add(it,'cst',        it.cstOrig,  it.cst,  it.notaFiscal||'');
     add(it,'cfopE',      '',          it.cfopE, it.notaFiscal||'');
     add(it,'cfopS',      it.cfopSOrig,it.cfopS,'');
-    add(it,'aliq',       it.aliqOrig, it.aliq, it.fundIcms||'');
+    add(it,'aliq',       it.aliqOrig, (it.st && it.aliq==='' && it.aliqOrig) ? 'sem destaque (ST)' : it.aliq, it.fundIcms||'');
     add(it,'red',        '',          it.redBc, it.fundIcms||'');
     add(it,'cclasstrib', it.ctOrig,   it.ct,   fundamentoLegivel(it));
   });
@@ -1135,7 +1257,8 @@ function abaCorrecoes(){
 }
 
 function abaResumo(){
-  const L=linhasCorrecao();
+  const TUDO=linhasCorrecao();
+  const DIV=TUDO.filter(r=>String(r[6]).startsWith('divergente')), L=TUDO.filter(r=>!String(r[6]).startsWith('divergente'));
   const porCampo=new Map(); L.forEach(r=>porCampo.set(r[2],(porCampo.get(r[2])||0)+1));
   const porOrigem=new Map(); L.forEach(r=>porOrigem.set(r[6],(porOrigem.get(r[6])||0)+1));
   const porSit=new Map(); ITENS.forEach(i=>porSit.set(i.status,(porSit.get(i.status)||0)+1));
@@ -1145,6 +1268,7 @@ function abaResumo(){
     [],
     ['Itens analisados', ITENS.length],
     ['Campos corrigidos', L.length],
+    ...(DIV.length?[['Divergências mantidas (modo só preencher vazios)', DIV.length]]:[]),
     ['Itens que vieram da memória da equipe', ITENS.filter(i=>i.memoriaGravada).length],
     ['Itens que seguem pendentes de revisão', ITENS.filter(i=>i.status==='rev'||i.ncmStatus==='erro').length],
     [],
@@ -1237,28 +1361,37 @@ $('btnExportar').onclick = async ()=>{
       const sd=doc.getElementsByTagName('sheetData')[0];
       const idx=indexar(sd), {d,novas}=destinos();
       novas.forEach(([col,tit])=>gravar(doc,sd,idx,HR+1,col,tit));
+      const ORIG = lerAba(SHEET); FORMULAS_PRESERVADAS = 0;
+      const novasCols = new Set(novas.map(x=>x[0]));
+      const W = (L, col, val, it, podeLimpar)=>{
+        if(col===undefined) return;
+        const antes = String(((ORIG[it.i]||[])[col]) ?? '').trim();
+        if(ESCOPO.modo==='vazios' && antes!=='') return;
+        // limpar só faz sentido em coluna do cliente, no modo corrigir (ex.: alíquota em item com ST)
+        gravar(doc,sd,idx,L,col,val, podeLimpar && ESCOPO.modo==='corrigir' && !novasCols.has(col) && antes!=='');
+      };
       let n=0;
       for(const it of ITENS){
-        const L=HR+2+it.i;
-        gravar(doc,sd,idx,L,d.ncm,   it.ncm);
-        gravar(doc,sd,idx,L,d.cest,  it.cest);
-        gravar(doc,sd,idx,L,d.cst,   it.cst);
-        gravar(doc,sd,idx,L,d.aliq,  it.aliq);
-        gravar(doc,sd,idx,L,d.red,   it.redBc);
-        gravar(doc,sd,idx,L,d.mva,   it.mva);
-        gravar(doc,sd,idx,L,d.cfopS, it.cfopS);
-        gravar(doc,sd,idx,L,d.cfopE, it.cfopE);
-        gravar(doc,sd,idx,L,d.ctCbs, it.ct);
-        gravar(doc,sd,idx,L,d.dsCbs, it.ctDesc);
-        gravar(doc,sd,idx,L,d.cstCbs,it.cstTrib);
-        gravar(doc,sd,idx,L,d.ctIbs, it.ct);
-        gravar(doc,sd,idx,L,d.dsIbs, it.ctDesc);
-        gravar(doc,sd,idx,L,d.cstIbs,it.cstTrib);
+        const L=it.i+1;                       // linha absoluta do Excel
+        W(L,d.ncm,   it.ncm,   it);
+        W(L,d.cest,  it.cest,  it, true);
+        W(L,d.mva,   it.mva,   it, true);
+        W(L,d.cst,   it.cst,   it);
+        W(L,d.aliq,  it.aliq,  it, true);
+        W(L,d.red,   it.redBc, it, true);
+        W(L,d.cfopS, it.cfopS, it);
+        W(L,d.cfopE, it.cfopE, it);
+        W(L,d.ctCbs, it.ct,    it);
+        W(L,d.dsCbs, it.ctDesc,it);
+        W(L,d.cstCbs,it.cstTrib,it);
+        W(L,d.ctIbs, it.ct,    it);
+        W(L,d.dsIbs, it.ctDesc,it);
+        W(L,d.cstIbs,it.cstTrib,it);
         if(++n%800===0) await new Promise(r=>setTimeout(r,0));
       }
       const dim=doc.getElementsByTagName('dimension')[0];
       if(dim){ const m=(dim.getAttribute('ref')||'').match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
-        if(m){ const max=Math.max(colI(m[3]), ...Object.values(d)); dim.setAttribute('ref', m[1]+m[2]+':'+colL(max)+m[4]); } }
+        if(m){ const max=Math.max(colI(m[3]), ...Object.values(d).filter(v=>v!==undefined)); dim.setAttribute('ref', m[1]+m[2]+':'+colL(max)+m[4]); } }
       zip.file(path, new XMLSerializer().serializeToString(doc));
       let nCorr=0;
       try{
@@ -1272,11 +1405,12 @@ $('btnExportar').onclick = async ()=>{
       return;
     }catch(err){ console.warn(err); toast('Não consegui preservar a formatação — exportando em formato simples.'); }
   }
-  const aoa=XLSX.utils.sheet_to_json(WB.Sheets[SHEET],{header:1,defval:''});
+  const aoa=lerAba(SHEET);
   const {d,novas}=destinos();
   novas.forEach(([c,t])=>{ aoa[HR][c]=t; });
-  ITENS.forEach(it=>{ const row=aoa[HR+1+it.i]; if(!row) return;
-    while(row.length<=Math.max(...Object.values(d))) row.push('');
+  const dv = Object.fromEntries(Object.entries(d).map(([k,v])=>[k, v===undefined?-1:v]));
+  ITENS.forEach(it=>{ const row=aoa[it.i]; if(!row) return;
+    while(row.length<=Math.max(...Object.values(dv))) row.push('');
     row[d.ncm]=it.ncm; row[d.cest]=it.cest||''; row[d.cst]=it.cst; row[d.cfopS]=it.cfopS; row[d.cfopE]=it.cfopE;
     row[d.aliq]=it.aliq||''; row[d.red]=it.redBc||''; row[d.mva]=it.mva||'';
     row[d.ctCbs]=it.ct; row[d.dsCbs]=it.ctDesc; row[d.cstCbs]=it.cstTrib;
@@ -1292,7 +1426,7 @@ $('btnExportar').onclick = async ()=>{
 
 $('btnCsv').onclick=()=>{
   const h=['Linha','Produto','NCM original','NCM','Situação','CSOSN/CST','CFOP saída','CFOP entrada','cClassTrib','CST IBS/CBS','Redução','Observação'];
-  const l=[h.join(';')].concat(ITENS.map(i=>[i.i+2+HR,`"${(i.desc||'').replace(/"/g,'""')}"`,i.ncmOrig,i.ncm,
+  const l=[h.join(';')].concat(ITENS.map(i=>[i.i+1,`"${(i.desc||'').replace(/"/g,'""')}"`,i.ncmOrig,i.ncm,
     SIT[i.status][1],i.cst,i.cfopS,i.cfopE,i.ct,i.cstTrib,i.red||'',
     `"${[i.ncmMsg,i.nota,i.notaFiscal].filter(Boolean).join(' | ').replace(/"/g,'""')}"`].join(';')));
   baixar(new Blob(['﻿'+l.join('\n')],{type:'text/csv;charset=utf-8'}),'relatorio_mix_fiscal.csv');

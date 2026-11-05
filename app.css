@@ -232,3 +232,14 @@ tr.sel td{background:var(--accent-2)!important}
 .pv-replicar input{margin-top:3px}
 .pv-replicar input{width:auto!important;flex:0 0 auto;margin:3px 0 0}
 .pv-replicar span{flex:1 1 auto;text-align:left}
+
+/* passo 2: aba e escopo da correção */
+.linha-aba{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:4px 0 14px}
+.linha-aba select{min-width:180px;width:auto}
+.linha-aba .muted{font-size:12.5px;flex:1 1 320px}
+.escopo{border:1px solid var(--line);border-radius:var(--r);padding:10px 14px 12px;margin:14px 0 4px}
+.escopo legend{font-weight:600;font-size:13px;padding:0 6px}
+.escopo label{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;cursor:pointer}
+.escopo input{width:auto!important;margin:0}
+.escopo-itens{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:10px}
+.escopo-modo{display:flex;flex-direction:column;gap:6px;padding-top:10px;border-top:1px dashed var(--line)}
