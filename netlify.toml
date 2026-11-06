@@ -1,4 +1,4 @@
-# Publicação do MIX Fiscal — site estático, sem etapa de build.
+# Publicação do LidiTax — site estático, sem etapa de build.
 [build]
   publish = "."
   command = ""
