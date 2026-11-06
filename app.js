@@ -270,7 +270,7 @@ function tratamentoRegra(t, r){
    Família = mesmo NCM + mesmo nome principal da descrição ("ARROZ", "CERVEJA"...).
    A tela mostra onde a família está incoerente e deixa decidir uma vez para todos
    os itens dela, sempre pela prévia do lote (nada é gravado sem confirmar). */
-const FAM_CAMPOS = [['cest','CEST','cest'],['cst','CST/CSOSN ICMS','cst'],['cclasstrib','cClassTrib','ct'],
+const FAM_CAMPOS = [['ncm','NCM','ncm'],['cest','CEST','cest'],['cst','CST/CSOSN ICMS','cst'],['cclasstrib','cClassTrib','ct'],
                     ['cfop_saida','CFOP saída','cfopS'],['cfop_entrada','CFOP entrada','cfopE']];
 let FAMILIAS = [];
 if($('famBusca')) $('famBusca').oninput=()=>tabelaFamilias();
@@ -289,8 +289,11 @@ function montarFamilias(){
     const campos = Object.fromEntries(FAM_CAMPOS.map(([c,,prop])=>[c, distintos(itens,prop)]));
     campos.aliq = distintos(itens,'aliq');
     const diverge = Object.values(campos).some(d=>d.length>1);
-    return {k, ncm, nome, itens, campos, diverge, pend: itens.filter(i=>i.status==='rev'||i.status==='err').length};
-  }).sort((a,b)=> (b.diverge-a.diverge) || (b.itens.length-a.itens.length));
+    const sug = itens.map(i=>(i.ncmSugs||[])[0]).find(x=>x && x.ncm && x.ncm_unico);
+    const incoerentes = itens.filter(i=>i.ncmIncoerente).length;
+    return {k, ncm, nome, itens, campos, diverge, incoerentes, sugNcm: sug ? sug.ncm : '',
+            pend: itens.filter(i=>i.status==='rev'||i.status==='err').length};
+  }).sort((a,b)=> (b.incoerentes-a.incoerentes) || (b.diverge-a.diverge) || (b.itens.length-a.itens.length));
   tabelaFamilias();
 }
 function tabelaFamilias(){
@@ -303,15 +306,16 @@ function tabelaFamilias(){
       <td><b>${esc(f.nome.toUpperCase())}</b><br><span class="muted">${esc((f.itens[0].desc||'').slice(0,60))}${f.itens.length>1?' …':''}</span></td>
       <td class="mono">${esc(f.ncm)}</td><td>${f.itens.length}</td>
       <td>${cel(f.campos.cest)}</td><td>${cel(f.campos.cst)}</td><td>${cel(f.campos.aliq)}</td><td>${cel(f.campos.cclasstrib)}</td>
-      <td>${f.pend?`<span class="chip c-rev">${f.pend} a revisar</span>`:'<span class="chip c-ok">ok</span>'}</td>
+      <td>${f.incoerentes?`<span class="chip c-err" title="A descrição aponta para outro capítulo da NCM">NCM ≠ descrição</span><br>`:''}${f.pend?`<span class="chip c-rev">${f.pend} a revisar</span>`:'<span class="chip c-ok">ok</span>'}${f.sugNcm?`<div class="muted mono">sugerido ${esc(f.sugNcm)}</div>`:''}</td>
       <td class="fam-vinc"><select data-fam="${esc(f.k)}" class="famCampo">${FAM_CAMPOS.map(([c,r])=>`<option value="${c}">${r}</option>`).join('')}</select>
-          <input class="mono famValor" data-fam="${esc(f.k)}" size="9" value="${esc(f.campos.cest[0][0])}">
+          <input class="mono famValor" data-fam="${esc(f.k)}" size="9" value="${esc((f.incoerentes||f.ncm==='—') && f.sugNcm ? f.sugNcm : f.campos.ncm[0][0])}">
           <button class="btn quiet famAplicar" data-fam="${esc(f.k)}">Aplicar à família</button></td>
     </tr>`).join('') : '<tr><td colspan="9" class="muted">Nenhuma família nesta seleção.</td></tr>';
   const acha = k=>FAMILIAS.find(f=>f.k===k);
   $('tbFam').querySelectorAll('select.famCampo').forEach(sel=>sel.onchange=()=>{
     const f=acha(sel.dataset.fam), inp=sel.parentElement.querySelector('.famValor');
-    inp.value = (f.campos[sel.value][0]||[''])[0];       // sugere o valor mais comum da família
+    inp.value = sel.value==='ncm' && (f.incoerentes||f.ncm==='—') && f.sugNcm ? f.sugNcm
+              : (f.campos[sel.value][0]||[''])[0];       // sugere o valor mais comum da família (NCM: o sugerido pela descrição)
   });
   $('tbFam').querySelectorAll('button.famAplicar').forEach(btn=>btn.onclick=async()=>{
     const f=acha(btn.dataset.fam), box=btn.parentElement;
@@ -331,14 +335,10 @@ async function carregarCuradoria(){
     esp.innerHTML='<option value="">Todas as espécies</option>'+CUR_ESPECIES[t].map(e=>`<option value="${e}">${CUR_ROTULO[e]}</option>`).join('');
     esp.dataset.trilho=t;
   }
-  let q = sb.from(t==='estadual'?'est_regra':'fed_regra').select('*').order('id').limit(3000);
-  if(sit) q=q.eq('situacao',sit);
-  if(esp.value) q=q.eq('especie',esp.value);
-  const {data, error} = await q;
-  if(error){ $('tbCur').innerHTML=`<tr><td colspan="8" class="muted">${esc(error.message)}</td></tr>`; return; }
-  CUR_DADOS = data||[];
+  const tab = t==='estadual'?'est_regra':'fed_regra';
+  CUR_DADOS = await carregarTodos(tab, '*', q=>{ q=q.order('id'); if(sit) q=q.eq('situacao',sit); if(esp.value) q=q.eq('especie',esp.value); return q; });
   // contagem por situação do trilho inteiro
-  const {data:todas} = await sb.from(t==='estadual'?'est_regra':'fed_regra').select('situacao').limit(5000);
+  const todas = await carregarTodos(tab, 'situacao');
   const c={pendente:0,aprovada:0,rejeitada:0}; (todas||[]).forEach(x=>{ if(c[x.situacao]!==undefined) c[x.situacao]++; });
   $('kpisCur').innerHTML=[['k-rev',c.pendente,'Aguardando curadoria'],['k-ok',c.aprovada,'Aprovadas'],['k-err',c.rejeitada,'Rejeitadas']]
     .map(([cl,v,l])=>`<button class="kpi ${cl}" disabled><div class="v">${v}</div><div class="l">${l}</div></button>`).join('');
@@ -412,16 +412,73 @@ async function curar(id, situacao){
 }
 
 /* ============================ BASE DE REFERÊNCIA ============================ */
+/* A API do Supabase devolve no máximo 1.000 linhas por consulta: tabelas grandes vêm em páginas. */
+async function carregarTodos(tabela, colunas, filtro){
+  const out=[];
+  for(let de=0; de<200000; de+=1000){
+    let q = sb.from(tabela).select(colunas).range(de, de+999);
+    if(filtro) q = filtro(q);
+    const {data, error} = await q;
+    if(error){ console.warn(tabela, error); break; }
+    out.push(...(data||[]));
+    if(!data || data.length<1000) break;
+  }
+  return out;
+}
+
+/* ---------- Descrição × NCM ----------
+   Sugestão pela descrição do produto (função sugerir_ncm_lote no banco): léxico montado da
+   nomenclatura oficial, das descrições do Anexo 007 do RICMS/RN e de sinônimos comerciais.
+   Uso: (1) NCM vazio ou inexistente → preenche só quando a sugestão é forte e aponta um código único;
+        (2) NCM válido → se a descrição aponta com força para outro capítulo, sinaliza para conferência.
+   Um NCM válido nunca é trocado sozinho. */
+async function sugestoesPorDescricao(descricoes){
+  const unicas=[...new Set(descricoes.filter(Boolean))], mapa=new Map();
+  for(let i=0;i<unicas.length;i+=250){
+    const lote=unicas.slice(i,i+250);
+    const {data, error} = await sb.rpc('sugerir_ncm_lote', {p_descricoes:lote, p_limite:3});
+    if(error){ console.warn('sugerir_ncm_lote', error); break; }
+    (data||[]).forEach(r=>{ const d=lote[r.idx-1]; if(!mapa.has(d)) mapa.set(d,[]); mapa.get(d).push(r); });
+  }
+  return mapa;
+}
+const fmtNcm = n => n && n.length===8 ? n.slice(0,4)+'.'+n.slice(4,6)+'.'+n.slice(6) : (n&&n.length===4 ? n.slice(0,2)+'.'+n.slice(2) : (n||''));
+const FONTE_SUG = {cest_rn:'descrição do Anexo 007 do RICMS/RN', nomenclatura:'nomenclatura oficial (NCM)', memoria:'memória da equipe'};
+function avaliarDescricaoNcm(item, sugs){
+  if(!sugs || !sugs.length || !ESCOPO.ncm) return;
+  const [a, b] = sugs;
+  item.ncmSugs = sugs;
+  const n = dig(item.ncm||'');
+  const texto = s => `${s.ncm_unico && s.ncm ? fmtNcm(s.ncm) : 'posição '+fmtNcm(s.posicao)} — ${String(s.texto||'').replace(/^[-\s]+/,'').slice(0,70)}`;
+  if(n.length!==8 || item.ncmStatus==='err'){
+    const folga = !b || b.posicao===a.posicao || (a.pontuacao - b.pontuacao) >= 0.3;
+    if(a.forte && a.ncm_unico && a.ncm && folga && (TIPI.size<8000 || TIPI.has(a.ncm))){
+      item.ncmTroca = item.ncm || item.ncmOrig || '(em branco)';
+      item.ncm = a.ncm; item.ncmStatus='rev'; item.ncmPorDescricao=true;
+      item.ncmMsg = `NCM ${n? 'inválido' : 'em branco'} — sugerido pela descrição (${FONTE_SUG[a.fonte]||a.fonte}): ${texto(a)}. Confira`;
+    } else {
+      item.ncmMsg = [item.ncmMsg, `A descrição sugere ${sugs.slice(0,2).map(texto).join(' ou ')} — escolha no painel de revisão`].filter(Boolean).join(' · ');
+    }
+    return;
+  }
+  const caps = new Set(sugs.slice(0,2).map(s=>s.posicao.slice(0,2)));
+  if(a.forte && (a.fonte==='cest_rn' || a.pontuacao>=2.0) && !caps.has(n.slice(0,2)) && item.ncmStatus!=='mem'){
+    item.ncmIncoerente = true;
+    if(item.ncmStatus==='ok') item.ncmStatus='rev';
+    item.ncmMsg = [item.ncmMsg, `NCM ${fmtNcm(n)} pode não corresponder à descrição: ela aponta para ${texto(a)} (${FONTE_SUG[a.fonte]||a.fonte}) — confira`].filter(Boolean).join(' · ');
+  }
+}
+
 async function carregarBase(){
   const [{data:anexos}, {data:metas}] = await Promise.all([
-    sb.from('ibs_cbs_anexo').select('ncm,cclasstrib,cst,exige,exclui,condicao').limit(5000),
+    carregarTodos('ibs_cbs_anexo','ncm,cclasstrib,cst,exige,exclui,condicao', q=>q.order('id')).then(data=>({data})),
     sb.from('cclasstrib_meta').select('*')
   ]);
   BASE.clear(); META.clear();
   (anexos||[]).forEach(r=>{ if(!BASE.has(r.ncm)) BASE.set(r.ncm,[]); BASE.get(r.ncm).push(r); });
   (metas||[]).forEach(m=>META.set(m.cclasstrib,m));
-  const {data:tipi} = await sb.from('tipi').select('ncm').limit(20000);
-  TIPI.clear(); (tipi||[]).forEach(r=>TIPI.add(r.ncm));
+  const tipi = await carregarTodos('tipi','ncm', q=>q.order('ncm'));
+  TIPI.clear(); tipi.forEach(r=>TIPI.add(String(r.ncm).trim()));
   await carregarOverrides();
   await Promise.all([carregarST(), carregarRegrasICMS().catch(e=>console.warn('regras ICMS:',e)),
                      carregarRegrasPisCofins().catch(e=>console.warn('regras PIS/COFINS:',e))]);
@@ -449,14 +506,13 @@ async function carregarOverrides(){
 async function carregarST(){
   const uf = (CLIENTE && CLIENTE.uf) || 'RN';
   // trilho estadual: só regra aprovada e dentro da vigência
-  const {data:nova} = await sb.from('est_regra_vigente')
-    .select('cest,ncm,descricao,fundamento,vigencia_inicio,trecho_id,mva')
-    .eq('uf',uf).eq('especie','st').limit(5000);
+  const nova = await carregarTodos('est_regra_vigente','cest,ncm,descricao,fundamento,vigencia_inicio,trecho_id,mva',
+    q=>q.eq('uf',uf).eq('especie','st').order('id'));
   let linhas = (nova||[]).filter(x=>x.ncm).map(x=>({...x, segmento:(x.cest||'').slice(0,2),
                  fundamento: x.fundamento + (x.vigencia_inicio? ' — vigente desde '+x.vigencia_inicio.split('-').reverse().join('/') : '')}));
   ST_FONTE = 'trilho estadual';
   if(!linhas.length){       // UF ainda sem carga no trilho novo: usa a base anterior
-    const {data} = await sb.from('st_uf').select('cest,ncm,descricao,segmento,fundamento').eq('uf',uf).limit(5000);
+    const data = await carregarTodos('st_uf','cest,ncm,descricao,segmento,fundamento', q=>q.eq('uf',uf).order('id'));
     linhas = data||[]; ST_FONTE = 'base anterior';
   }
   ST = linhas.sort((a,b)=>b.ncm.length-a.ncm.length);   // mais específico primeiro
@@ -466,9 +522,8 @@ async function carregarST(){
 let REGRAS_ICMS = [], MVA = [], ST_FONTE = '';
 async function carregarRegrasICMS(){
   const uf = (CLIENTE && CLIENTE.uf) || 'RN';
-  const {data} = await sb.from('est_regra_vigente')
-    .select('especie,ncm,descricao,aliquota,reducao_bc,carga,operacao,exige,exclui,condicao,fundamento')
-    .eq('uf',uf).in('especie',['aliquota','reducao','isencao']).limit(2000);
+  const data = await carregarTodos('est_regra_vigente','especie,ncm,descricao,aliquota,reducao_bc,carga,operacao,exige,exclui,condicao,fundamento',
+    q=>q.eq('uf',uf).in('especie',['aliquota','reducao','isencao']).order('id'));
   REGRAS_ICMS = (data||[]).filter(r=>r.operacao!=='interestadual' && (r.ncm || (r.exige&&r.exige.length)));
   const {data:mv} = await sb.from('st_mva').select('produto,mva_original,mva_ajustada,aliquota_interestadual,fundamento').eq('uf',uf).limit(1000);
   MVA = (mv||[]).map(m=>({...m,
@@ -518,9 +573,8 @@ function mvaDoCest(cest){
    A partir de 01/01/2027 PIS e Cofins deixam de existir (ADCT, art. 126, II). */
 let REGRAS_PC = [];
 async function carregarRegrasPisCofins(){
-  const {data} = await sb.from('fed_regra_vigente')
-    .select('ncm,regime,cst_pis,cst_cofins,cst_entrada,aliquota_pis,aliquota_cofins,natureza_receita,tabela_sped,exige,exclui,condicao,fundamento,atividade,ncm_exclui,automatico,codigo_origem')
-    .eq('especie','piscofins').limit(5000);
+  const data = await carregarTodos('fed_regra_vigente','ncm,regime,cst_pis,cst_cofins,cst_entrada,aliquota_pis,aliquota_cofins,natureza_receita,tabela_sped,exige,exclui,condicao,fundamento,atividade,ncm_exclui,automatico,codigo_origem',
+    q=>q.eq('especie','piscofins').order('id'));
   REGRAS_PC = (data||[]).sort((a,b)=>(b.ncm||'').length-(a.ncm||'').length);
   const {data:docs} = await sb.from('fed_documento').select('numero').eq('tipo','tabela_sped');
   TABELAS_PC = (docs||[]).map(d=>d.numero);
@@ -977,11 +1031,19 @@ $('selCliente').onchange = async e=>{
   if(CLIENTE) toast(`Cliente ${esc(CLIENTE.uf)} · ${ST.length} linhas de substituição tributária (${ST_FONTE}) e ${REGRAS_ICMS.length} regras de alíquota, redução e isenção.`);
 };
 
-$('btnRodar').onclick = ()=>{
+$('btnRodar').onclick = async ()=>{
   if(MAPA.ncm==='' || MAPA.ncm===undefined){ toast('Indique a coluna de NCM.'); return; }
   const aoa=lerAba(SHEET);
   ESCOPO = lerEscopo();
   ITENS=[];
+  // sugestões de NCM pela descrição, em lote, antes de enquadrar (o NCM sugerido já entra no ICMS/IBS/PIS)
+  let SUG = new Map();
+  if(ESCOPO.ncm && MAPA.desc!=='' && MAPA.desc!==undefined){
+    $('btnRodar').disabled = true; toast('Lendo as descrições para conferir os NCM…');
+    try{ SUG = await sugestoesPorDescricao(aoa.slice(HR+1).map(r=>String(r[MAPA.desc]||'').trim())); }
+    catch(e){ console.warn(e); }
+    $('btnRodar').disabled = false;
+  }
   // NCM do mesmo produto em outra linha: preenche quem veio em branco
   const ncmPorDesc = new Map();
   if(MAPA.desc!=='' && MAPA.desc!==undefined) aoa.slice(HR+1).forEach(r=>{
@@ -1008,11 +1070,15 @@ $('btnRodar').onclick = ()=>{
         msg:`NCM ${v.ncm} não existe na TIPI; a subposição ${v.ncm.slice(0,4)}.${v.ncm.slice(4,6)} tem um único código válido (${irmaos[0]}) — confirme`};
     }
     if(!ESCOPO.ncm){ v = {...v, ncm: dig(bruto).length===8 ? dig(bruto) : v.ncm}; }
+    const pre = {ncm:v.ncm, ncmStatus:v.status, ncmMsg:v.msg, ncmOrig:(bruto+'').trim()};
+    if(v.status!=='rev' || !v.ncmTroca) avaliarDescricaoNcm(pre, SUG.get(descLinha));
+    v = {...v, ncm:pre.ncm, status:pre.ncmStatus, msg:pre.ncmMsg};
     const item = {
       i:idx,
       desc: descLinha,
       ncmOrig: (bruto+'').trim(),
       ncm: v.ncm, ncmStatus: v.status, ncmMsg: v.msg,
+      ncmSugs: pre.ncmSugs, ncmIncoerente: pre.ncmIncoerente, ncmPorDescricao: pre.ncmPorDescricao,
       cestOrig: MAPA.cest!=='' ? (r[MAPA.cest]+'').trim() : '',
       cstOrig:  MAPA.cst!==''  ? (r[MAPA.cst]+'').trim()  : '',
       ctOrig:   MAPA.ctIbs!==''&&MAPA.ctIbs!==undefined ? (r[MAPA.ctIbs]+'').trim()
@@ -1134,8 +1200,7 @@ async function buscarNcm(termo){
 }
 async function aplicarMemoria(){
   if(!ITENS.length) return;
-  const {data} = await sb.from('memoria_correcao').select('*')
-    .eq('cliente_id', CLIENTE? CLIENTE.id : null).limit(5000);
+  const data = await carregarTodos('memoria_correcao','*', q=>q.eq('cliente_id', CLIENTE? CLIENTE.id : null).order('id'));
   const mem=new Map(); (data||[]).forEach(m=>mem.set(`${m.ncm}|${m.descricao_norm}|${m.campo}`, m));
   ITENS.forEach(it=>{
     ['cclasstrib','cst','cfop_saida','cfop_entrada','ncm'].forEach(campo=>{
@@ -1221,7 +1286,7 @@ $('selTodos').onchange=e=>{
 $('btnLimparSel').onclick=()=>{ SELECAO.clear(); $('selTodos').checked=false; atualizarSelecao(); tabela(); };
 
 /* ---------- aplicação em lote ---------- */
-const CAMPO_ITEM = {cclasstrib:'ct', cest:'cest', cst:'cst', cfop_saida:'cfopS', cfop_entrada:'cfopE'};
+const CAMPO_ITEM = {cclasstrib:'ct', cest:'cest', cst:'cst', cfop_saida:'cfopS', cfop_entrada:'cfopE', ncm:'ncm'};
 /* ---------- lote em duas etapas: planejar (sem efeito) → prévia → executar ---------- */
 const ROTULO_LOTE = {cclasstrib:'cClassTrib', cest:'CEST', cst:'CST/CSOSN ICMS', cfop_saida:'CFOP saída', cfop_entrada:'CFOP entrada', ncm:'NCM'};
 function planejarLote(campo, valor, chavesIn, replicarFundamento){
@@ -1635,6 +1700,8 @@ function abaResumo(){
     [],
     ['Itens analisados', ITENS.length],
     ['Campos corrigidos', L.length],
+    ['NCM preenchidos pela descrição (a conferir)', ITENS.filter(i=>i.ncmPorDescricao).length],
+    ['NCM que podem não corresponder à descrição', ITENS.filter(i=>i.ncmIncoerente).length],
     ...(DIV.length?[['Divergências mantidas (modo só preencher vazios)', DIV.length]]:[]),
     ['Itens que vieram da memória da equipe', ITENS.filter(i=>i.memoriaGravada).length],
     ['Itens que seguem pendentes de revisão', ITENS.filter(i=>i.status==='rev'||i.ncmStatus==='erro').length],
@@ -1654,8 +1721,9 @@ function abaResumo(){
             ...(pcExtinto() ? [['PIS/Cofins: extintos a partir de 01/01/2027 (EC 132/2023 — ADCT, art. 126, II); campos não preenchidos']]
                : !TEM_EXCECOES_PC() ? [['PIS/Cofins: não preenchidos — aguardando a carga das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições (monofásico, alíquota zero, isenção, suspensão), sem as quais a regra geral erraria esses produtos']]
                : [['PIS/Cofins: regra geral do regime e exceções por NCM das tabelas '+[...new Set(REGRAS_PC.filter(r=>r.ncm).map(r=>r.tabela_sped))].sort().join(', ')
-                   +' da EFD-Contribuições; tabelas ainda não carregadas: '+['4.3.10','4.3.11','4.3.12','4.3.13','4.3.14','4.3.15','4.3.16','4.3.17'].filter(t=>!REGRAS_PC.some(r=>r.tabela_sped===t) && !TABELAS_PC.includes(t)).join(', ')
-                   +' — itens dessas tabelas recebem a regra geral; válidos para fatos geradores até 31/12/2026']]),
+                   +' da EFD-Contribuições'+(()=>{ const f=['4.3.10','4.3.11','4.3.12','4.3.13','4.3.14','4.3.15','4.3.16','4.3.17'].filter(t=>!REGRAS_PC.some(r=>r.tabela_sped===t) && !TABELAS_PC.includes(t));
+                      return f.length ? '; tabelas ainda não carregadas: '+f.join(', ')+' — itens dessas tabelas recebem a regra geral' : ''; })()
+                   +'; válidos para fatos geradores até 31/12/2026']]),
             ...(estAbAtivo() ? [['Estoque de abertura da CBS: código da tabela "Descrição do Estoque de Abertura da CBS" (NT EFD-Contribuições 013/2026, Anexo V — conteúdo inicialmente previsto) para o registro F150, a escriturar até junho/2027']] : []),
             ['Este resumo é gerado pela ferramenta e não substitui a conferência final do responsável técnico']);
   return m;
