@@ -6,3 +6,8 @@
 -- Dados carregados no trilho federal: Leis 10.637/2002, 10.833/2003, 9.715/1998, 9.718/1998 e EC 132/2023 (ADCT, art. 126, II),
 -- com as regras gerais de PIS/COFINS do Lucro Real e do Presumido em situação "pendente" (aprovar na Curadoria).
 -- Trilho estadual: MVA original das regras de ST conferida no Anexo 007 (atualizado até o Decreto 35.865/2026).
+
+-- 06/11/2026 (tarde): fed_regra_atividade_exclusoes (atividade, ncm_exclui, automatico, codigo_origem) e curadoria_em_lote (curar_regras).
+-- Carga do trilho federal a partir das tabelas enviadas no chat: 4.3.10 (revenda monofásica CST 04 e fabricante CST 02),
+-- 4.3.13 v1.37 (alíquota zero CST 06, inclusive o código 918 só para varejista); 4.3.11 v1.35 e 4.3.17 conferidas sem regra nova;
+-- NT EFD-Contribuições 013/2026 registrada (estoque de abertura da CBS — registro F150). 183 regras em situação "pendente".

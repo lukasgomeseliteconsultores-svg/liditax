@@ -343,8 +343,12 @@ async function carregarCuradoria(){
 }
 function tabelaCuradoria(){
   const t=$('curTrilho').value, b=norm($('curBusca').value||'');
-  const L = CUR_DADOS.filter(r=>!b || norm([r.ncm,r.cest,r.descricao,r.fundamento,r.condicao].join(' ')).includes(b));
+  const L = CUR_DADOS.filter(r=>!b || norm([r.ncm,r.cest,r.descricao,r.fundamento,r.condicao,r.tabela_sped,r.natureza_receita].join(' ')).includes(b));
   $('curInfo').textContent = L.length+' regra(s)';
+  CUR_VISIVEIS = L;
+  const pend = L.filter(r=>r.situacao==='pendente').length;
+  $('btnCurLote').hidden = !pend;
+  $('btnCurLote').textContent = `Aprovar as ${pend} pendente(s) desta lista`;
   const vig = r => (r.vigencia_inicio? r.vigencia_inicio.split('-').reverse().join('/') : '—')+' a '+(r.vigencia_fim? r.vigencia_fim.split('-').reverse().join('/') : 'sem fim');
   $('tbCur').innerHTML = L.length ? L.slice(0,600).map(r=>`<tr>
       <td>${esc(CUR_ROTULO[r.especie]||r.especie)}</td>
@@ -374,6 +378,25 @@ function tabelaCuradoria(){
     box.hidden=false;
   });
 }
+let CUR_VISIVEIS = [];
+if($('btnCurLote')) $('btnCurLote').onclick = async ()=>{
+  const t=$('curTrilho').value, ids=CUR_VISIVEIS.filter(r=>r.situacao==='pendente').map(r=>r.id);
+  if(!ids.length) return;
+  // prévia: mostra o que vai ser aprovado antes de gravar
+  $('pvTitulo').textContent = `Aprovar ${ids.length} regra(s) do trilho ${t}?`;
+  $('pvResumo').innerHTML = 'Cada regra passa a valer no próximo processamento de planilha. Você pode devolver qualquer uma a pendente depois.';
+  $('pvLinhas').innerHTML = CUR_VISIVEIS.filter(r=>r.situacao==='pendente').slice(0,12).map(r=>`<tr><td>${esc((r.descricao||'').slice(0,46))}</td>
+      <td class="mono">${esc(r.ncm||r.cest||'—')}</td><td>${esc(tratamentoRegra(t,r)).slice(0,40)}</td><td class="mono">${esc((r.fundamento||'').slice(0,30))}</td></tr>`).join('');
+  $('pvMais').textContent = ids.length>12 ? `e mais ${ids.length-12} regra(s).` : '';
+  $('pvMemoria').hidden = true; $('pvReplicarBox').hidden = true; $('previa').hidden=false;
+  const ok = await new Promise(res=>{ $('pvConfirmar').onclick=()=>res(true); $('pvCancelar').onclick=()=>res(false); });
+  $('previa').hidden=true; $('pvConfirmar').onclick=$('pvCancelar').onclick=null;
+  if(!ok) return;
+  const {data,error} = await sb.rpc('curar_regras',{p_trilho:t, p_ids:ids, p_situacao:'aprovada'});
+  if(error){ toast('Não foi possível aprovar: '+esc(error.message)); return; }
+  toast(`<b>${data??ids.length}</b> regra(s) aprovada(s). Valem a partir do próximo processamento.`);
+  await carregarCuradoria(); carregarBase();
+};
 async function curar(id, situacao){
   const t=$('curTrilho').value;
   let nota=null;
@@ -493,10 +516,13 @@ function mvaDoCest(cest){
 let REGRAS_PC = [];
 async function carregarRegrasPisCofins(){
   const {data} = await sb.from('fed_regra_vigente')
-    .select('ncm,regime,cst_pis,cst_cofins,cst_entrada,aliquota_pis,aliquota_cofins,natureza_receita,tabela_sped,exige,exclui,condicao,fundamento')
+    .select('ncm,regime,cst_pis,cst_cofins,cst_entrada,aliquota_pis,aliquota_cofins,natureza_receita,tabela_sped,exige,exclui,condicao,fundamento,atividade,ncm_exclui,automatico,codigo_origem')
     .eq('especie','piscofins').limit(5000);
   REGRAS_PC = (data||[]).sort((a,b)=>(b.ncm||'').length-(a.ncm||'').length);
+  const {data:docs} = await sb.from('fed_documento').select('numero').eq('tipo','tabela_sped');
+  TABELAS_PC = (docs||[]).map(d=>d.numero);
 }
+let TABELAS_PC = [];
 const PC_FIM = new Date('2027-01-01T00:00:00-03:00');
 const pcExtinto = ()=> new Date() >= PC_FIM;
 const TEM_EXCECOES_PC = ()=> REGRAS_PC.some(r=>r.ncm);
@@ -516,33 +542,97 @@ function regimeFederal(cliente){
   return '';
 }
 const pcNum = v => (v===null || v===undefined || v==='') ? '' : String(+v).replace('.',',');
-function pisCofinsDoItem(item, cliente){
-  const out = {cst:'', cstE:'', aliqPis:'', aliqCofins:'', nat:'', trib:'', fund:''};
-  if(pcExtinto()){ out.fund='PIS/Cofins extintos a partir de 01/01/2027 (EC 132/2023 — ADCT, art. 126, II): campos não preenchidos'; return out; }
-  if(!TEM_EXCECOES_PC()){ out.fund='PIS/Cofins aguardando a carga das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições (exceções por NCM)'; return out; }
-  const reg = regimeFederal(cliente), ncm = item.ncm||'', d = norm(item.desc||'');
-  if(dig(ncm).length!==8) return out;
-  const exc = REGRAS_PC.find(r=> r.ncm && ncm.startsWith(r.ncm) && (!r.regime || r.regime===reg)
+function atividadeCliente(cliente){
+  if(ehIndustria(cliente)) return 'industria';
+  return 'comercio';
+}
+const ehVarejista = cliente => dig((cliente && cliente.cnae_principal) || '').slice(0,2)==='47';
+function excecaoPisCofins(item, cliente){
+  const reg = regimeFederal(cliente), ncm = dig(item.ncm||''), d = norm(item.desc||'');
+  const ativ = atividadeCliente(cliente);
+  return REGRAS_PC.find(r=> r.ncm && ncm.startsWith(r.ncm) && (!r.regime || r.regime===reg)
+      && (!r.atividade || r.atividade===ativ || (r.atividade==='varejo' && ativ==='comercio' && ehVarejista(cliente)))
+      && !(r.ncm_exclui && r.ncm_exclui.some(x=>ncm.startsWith(x)))
       && !(r.exige && r.exige.length && !r.exige.some(t=>d.includes(t)))
       && !(r.exclui && r.exclui.length && r.exclui.some(t=>d.includes(t))));
+}
+function pisCofinsDoItem(item, cliente){
+  const out = {cst:'', cstE:'', aliqPis:'', aliqCofins:'', nat:'', trib:'', fund:'', rev:'', regra:null};
+  if(pcExtinto()){ out.fund='PIS/Cofins extintos a partir de 01/01/2027 (EC 132/2023 — ADCT, art. 126, II): campos não preenchidos'; return out; }
+  if(!TEM_EXCECOES_PC()){ out.fund='PIS/Cofins aguardando a carga das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições (exceções por NCM)'; return out; }
+  const reg = regimeFederal(cliente);
+  if(dig(item.ncm||'').length!==8) return out;
+  const exc = excecaoPisCofins(item, cliente);
+  out.regra = exc || null;
+  if(exc && exc.automatico===false) out.rev = 'PIS/Cofins: '+(exc.condicao||'regra condicional')+'';
+  if(exc && exc.atividade==='varejo') out.rev = (out.rev?out.rev+' · ':'')+'PIS/Cofins: alíquota zero só se o cliente for varejista (≥ 75% da receita a consumidor final no ano anterior)';
+  // motocicletas (MP 2.158-35/2001, art. 43) e cigarros (Lei 9.532/1997, art. 53) têm PIS/Cofins por substituição
+  // tributária — tabela 4.3.12 (CST 05); enquanto ela não for carregada, o item vai para conferência
+  const n8 = dig(item.ncm||'');
+  if(!exc && !REGRAS_PC.some(r=>r.tabela_sped==='4.3.12') && (n8.startsWith('8711') || n8.startsWith('2402')))
+    out.rev = 'PIS/Cofins: produto com substituição tributária das contribuições (tabela 4.3.12, CST 05), tabela ainda não carregada — conferir';
   if(reg==='simples'){
-    out.trib = exc ? (CST_PC_ROTULO[exc.cst_pis]||'') : 'Tributado no DAS';
-    out.nat  = exc ? (exc.natureza_receita||'') : '';
-    out.fund = 'Simples Nacional: PIS/Cofins recolhidos no DAS (LC 123/2006, art. 13, IV e V)'
-             + (exc ? ' · '+exc.fundamento+' — segregar a receita no PGDAS-D' : '');
+    if(exc && exc.cst_pis==='04'){ out.trib='Monofásica — segregar a receita no PGDAS-D'; out.nat=exc.natureza_receita||''; }
+    else if(exc && exc.cst_pis==='06'){ out.trib='Alíquota zero (código '+(exc.natureza_receita||'')+' da tabela 4.3.13) — conferir o tratamento no PGDAS-D'; out.nat=exc.natureza_receita||''; }
+    else out.trib='Tributado no DAS';
+    out.fund = 'Simples Nacional: PIS/Cofins recolhidos no DAS (LC 123/2006, art. 13, IV e V)' + (exc ? ' · '+exc.fundamento : '');
     return out;
   }
   const r = exc || REGRAS_PC.find(x=>!x.ncm && x.regime===reg);
   if(!r){
-    out.fund = reg ? 'Regra de PIS/Cofins do regime '+(reg==='real'?'Lucro Real':'Lucro Presumido')+' ainda não aprovada na curadoria'
+    out.fund = reg ? 'Regra geral de PIS/Cofins do '+(reg==='real'?'Lucro Real':'Lucro Presumido')+' ainda não aprovada na curadoria'
                    : 'Regime tributário do cliente não informado — PIS/Cofins não preenchidos';
     return out;
   }
-  out.cst = r.cst_pis||''; out.cstE = r.cst_entrada || CST_PC_ENTRADA[out.cst] || '';
+  out.cst = r.cst_pis||'';
+  // entrada: na revenda monofásica o Presumido e o Real não têm crédito (CST 70); alíquota zero na aquisição → 73
+  out.cstE = r.cst_entrada || CST_PC_ENTRADA[out.cst] || '';
+  if(exc && exc.cst_pis==='02') out.cstE = '';            // indústria: a entrada depende do insumo, não do produto vendido
+  if(!exc && reg==='presumido') out.cstE = '70';
   out.aliqPis = pcNum(r.aliquota_pis ?? (exc?0:'')); out.aliqCofins = pcNum(r.aliquota_cofins ?? (exc?0:''));
   out.nat = r.natureza_receita||'';
   out.trib = CST_PC_ROTULO[out.cst] || '';
-  out.fund = r.fundamento + (r.tabela_sped ? ' — Tabela '+r.tabela_sped+' da EFD-Contribuições' : '');
+  out.fund = r.fundamento + (r.tabela_sped && !String(r.fundamento).includes('Tabela') ? ' — Tabela '+r.tabela_sped+' da EFD-Contribuições' : '');
+  return out;
+}
+
+/* ---------- Estoque de abertura da CBS em 01/01/2027 (NT EFD-Contribuições 013/2026) ----------
+   Código da tabela "Descrição do Estoque de Abertura da CBS" (Anexo V da NT — conteúdo
+   inicialmente previsto), usado no campo 13 do registro F150, a escriturar até junho/2027.
+   Regra do art. 381 da LC 214/2025, como descrita na NT: */
+const ESTAB_FIM = new Date('2027-07-01T00:00:00-03:00');
+const estAbAtivo = ()=> TEM_EXCECOES_PC() && new Date() < ESTAB_FIM;
+const ESTAB_ROTULO = {'1':'Bens nacionais — estoque do regime cumulativo','2':'Bens importados — estoque do regime cumulativo',
+  '5':'Bens nacionais — monofásico/ST na aquisição — medicamentos','6':'Bens nacionais — monofásico/ST na aquisição — veículos, autopeças, pneus e câmaras',
+  '7':'Bens nacionais — monofásico/ST na aquisição — motocicletas','8':'Bens nacionais — monofásico/ST na aquisição — cigarros'};
+function estoqueAbertura(item, cliente, pc){
+  const out={cod:'', fund:'', rev:''};
+  if(!estAbAtivo() || dig(item.ncm||'').length!==8) return out;
+  const reg = regimeFederal(cliente), ncm=dig(item.ncm), exc = pc && pc.regra;
+  const origem = (dig(item.cstOrig||'')+'').length===3 ? dig(item.cstOrig)[0] : '';
+  const importado = origem==='1' || origem==='6';
+  const base = 'NT EFD-Contribuições 013/2026, registro F150 e Anexo V (conteúdo inicialmente previsto); LC 214/2025, art. 381';
+  if(reg==='simples'){ out.fund='Simples Nacional: crédito do estoque de abertura só para quem optar pelo regime regular do IBS/CBS — '+base; return out; }
+  if(ehIndustria(cliente) && reg==='real'){ out.fund='Indústria no Lucro Real: estoque já gerou crédito básico — '+base; return out; }
+  // aquisição com alíquota zero, isenção, suspensão ou sem incidência não dá crédito presumido
+  if(exc && ['06','07','08','09'].includes(exc.cst_pis)){ out.cod='—'; out.fund='Sem crédito presumido: aquisição com '+(CST_PC_ROTULO[exc.cst_pis]||'').toLowerCase()+' — '+base; return out; }
+  if(reg==='presumido'){
+    out.cod = importado ? '2' : '1';
+    out.fund = ESTAB_ROTULO[out.cod]+' — '+base;
+    if(importado) out.rev='Estoque de abertura: origem de importação direta pelo CST do ICMS — confirmar e usar o valor efetivamente pago de PIS/Cofins-Importação';
+    return out;
+  }
+  if(reg==='real'){
+    let cod='';
+    if(exc && exc.codigo_origem==='201') cod='5';
+    else if(exc && exc.codigo_origem==='202'){ cod='5'; out.rev='Estoque de abertura: a NT descreve o código 5 como "Medicamentos (inciso I do art. 1º da Lei 10.147/2000)"; o inciso I também abrange perfumaria — confirmar se este item entra'; }
+    else if(exc && ['301','302','303','304'].includes(exc.codigo_origem)) cod='6';
+    else if(ncm.startsWith('8711')) cod='7';
+    else if(ncm.startsWith('240220')){ cod='8'; out.rev='Estoque de abertura: cigarros pela NCM 2402.20 da TIPI — conferir'; }
+    if(!cod){ out.fund='Lucro Real: mercadoria com crédito básico na aquisição, sem crédito presumido de estoque — '+base; return out; }
+    if(importado){ out.rev=(out.rev?out.rev+' · ':'')+'Estoque de abertura: os códigos 5 a 8 são para bens nacionais e o CST do ICMS indica importação direta — conferir'; }
+    out.cod=cod; out.fund=ESTAB_ROTULO[cod]+' — '+base;
+  }
   return out;
 }
 
@@ -823,7 +913,8 @@ const CAMPOS = [
   ['cstPisE','CST PIS/COFINS entrada',['cst pis entrada','cst entrada pis','cst pis/cofins entrada']],
   ['aliqPis','Alíquota PIS (%)',     ['aliquota pis','alíquota pis','aliq pis','% pis']],
   ['aliqCofins','Alíquota COFINS (%)',['aliquota cofins','alíquota cofins','aliq cofins','% cofins']],
-  ['natRec','Natureza da receita',   ['natureza da receita','natureza receita','nat receita','nat. receita','cod natureza']]
+  ['natRec','Natureza da receita',   ['natureza da receita','natureza receita','nat receita','nat. receita','cod natureza']],
+  ['estAb', 'Estoque de abertura CBS (F150)', ['estoque de abertura','estoque abertura','desc_est']]
 ];
 
 async function montarMapa(){
@@ -950,20 +1041,23 @@ $('btnRodar').onclick = ()=>{
     item.notaFiscal = f.nota;
     const pc = pisCofinsDoItem(item, CLIENTE);
     item.cstPis=pc.cst; item.cstPisE=pc.cstE; item.aliqPis=pc.aliqPis; item.aliqCofins=pc.aliqCofins;
-    item.natRec=pc.nat; item.tribPc=pc.trib; item.fundPc=pc.fund;
+    item.natRec=pc.nat; item.tribPc=pc.trib; item.fundPc=pc.fund; item.revPc=pc.rev;
+    const ea = estoqueAbertura(item, CLIENTE, pc);
+    item.estAb=ea.cod; item.fundEstAb=ea.fund; item.revEstAb=ea.rev;
+    if(ESCOPO.pis && (pc.rev || ea.rev)) item.nota=[item.nota, pc.rev, ea.rev].filter(Boolean).join(' · ');
     const orig = k => MAPA[k]!=='' && MAPA[k]!==undefined ? (r[MAPA[k]]+'').trim() : '';
     item.cstPisOrig=orig('cstPis'); item.cstPisEOrig=orig('cstPisE'); item.aliqPisOrig=orig('aliqPis');
-    item.aliqCofinsOrig=orig('aliqCofins'); item.natRecOrig=orig('natRec');
+    item.aliqCofinsOrig=orig('aliqCofins'); item.natRecOrig=orig('natRec'); item.estAbOrig=orig('estAb');
     if(ESCOPO.modo==='vazios' || !ESCOPO.pis){ if(item.cstPisOrig) item.cstPis=item.cstPisOrig; }
     if(dig(item.ncm).length!==8){
       // sem NCM válido não há base para enquadrar: nada é preenchido, o item vai para conferência
       Object.assign(item,{aliq:'',redBc:'',mva:'',cest:'',ct:'',cstTrib:'',ctDesc:'',cfopS:item.cfopSOrig,cfopE:'',
-        cstPis:item.cstPisOrig||'',cstPisE:'',aliqPis:'',aliqCofins:'',natRec:'',tribPc:'',fundPc:'',
+        cstPis:item.cstPisOrig||'',cstPisE:'',aliqPis:'',aliqCofins:'',natRec:'',tribPc:'',fundPc:'',revPc:'',estAb:'',fundEstAb:'',revEstAb:'',
         cst:item.cstOrig, fundIcms:'', ncmStatus:'err'});
       item.nota=[item.nota,'Sem NCM válido: ICMS, CFOP e IBS/CBS não foram preenchidos'].filter(Boolean).join(' · ');
     }
     item.status = item.ncmStatus==='err' ? 'err'
-                : (item.confIbs==='rev' || item.ncmStatus==='rev'
+                : (item.confIbs==='rev' || item.ncmStatus==='rev' || (ESCOPO.pis && (item.revPc || item.revEstAb))
                    || item.cestDivergente || (item.st && !item.st.confirmado)) ? 'rev' : 'ok';
     ITENS.push(item);
   });
@@ -1319,13 +1413,13 @@ function destinos(){
   let prox = Math.max(HEADERS.length, fimCliente); const d={}; const novas=[];
   const ATIVO = {ncm:'ncm', cest:'cest', mva:'cest', cst:'icms', aliq:'icms', red:'icms', cfopS:'cfop', cfopE:'cfop',
                  ctCbs:'ibs', dsCbs:'ibs', cstCbs:'ibs', ctIbs:'ibs', dsIbs:'ibs', cstIbs:'ibs',
-                 cstPis:'pis', cstPisE:'pis', aliqPis:'pis', aliqCofins:'pis', natRec:'pis', tribPc:'pis'};
+                 cstPis:'pis', cstPisE:'pis', aliqPis:'pis', aliqCofins:'pis', natRec:'pis', tribPc:'pis', estAb:'pis'};
   const simplesCli = regimeFederal(CLIENTE)==='simples';
   const SO_NORMAL = new Set(['cstPis','cstPisE','aliqPis','aliqCofins']);   // no Simples, PIS/Cofins vão no DAS
   const pede = (chave, titulo)=>{
     if(ESCOPO[ATIVO[chave]]===false) return undefined;
     const semColuna = MAPA[chave]==='' || MAPA[chave]===undefined;
-    if(ATIVO[chave]==='pis' && !pcAtivo() && semColuna) return undefined;
+    if(chave==='estAb' ? (!estAbAtivo() && semColuna) : (ATIVO[chave]==='pis' && !pcAtivo() && semColuna)) return undefined;
     if(simplesCli && SO_NORMAL.has(chave) && semColuna) return undefined;
     if(MAPA[chave]!=='' && MAPA[chave]!==undefined){
       const c=+MAPA[chave];
@@ -1354,6 +1448,7 @@ function destinos(){
   d.aliqCofins=pede('aliqCofins','ALÍQUOTA COFINS (%)');
   d.natRec= pede('natRec','NATUREZA DA RECEITA');
   d.tribPc= simplesCli ? pede('tribPc','PIS/COFINS NO SIMPLES') : undefined;
+  d.estAb = simplesCli ? undefined : pede('estAb','ESTOQUE ABERTURA CBS (F150)');
   return {d, novas};
 }
 
@@ -1411,7 +1506,8 @@ const ROTULO_CAMPO = {ncm:'NCM', cest:'CEST', cst:'CST/CSOSN ICMS', cfopS:'CFOP 
                       aliq:'Alíquota ICMS', red:'Redução BC ICMS',
                       cfopE:'CFOP entrada', cclasstrib:'cClassTrib IBS/CBS',
                       cstPis:'CST PIS/COFINS saída', cstPisE:'CST PIS/COFINS entrada',
-                      aliqPis:'Alíquota PIS', aliqCofins:'Alíquota COFINS', natRec:'Natureza da receita'};
+                      aliqPis:'Alíquota PIS', aliqCofins:'Alíquota COFINS', natRec:'Natureza da receita',
+                      estAb:'Estoque de abertura CBS (F150)'};
 
 function autoria(chave, campo){
   for(let k=TRILHA.length-1;k>=0;k--){ const t=TRILHA[k];
@@ -1441,7 +1537,7 @@ function lerEscopo(){
 }
 const GRUPO_CAMPO = {ncm:'ncm', cest:'cest', mva:'cest', cst:'icms', aliq:'icms', red:'icms',
                      cfopS:'cfop', cfopE:'cfop', cclasstrib:'ibs',
-                     cstPis:'pis', cstPisE:'pis', aliqPis:'pis', aliqCofins:'pis', natRec:'pis'};
+                     cstPis:'pis', cstPisE:'pis', aliqPis:'pis', aliqCofins:'pis', natRec:'pis', estAb:'pis'};
 /* indústria (CNAE divisões 10 a 33) destaca ICMS próprio mesmo com ST; comércio não */
 function ehIndustria(cliente){
   const c = dig((cliente && cliente.cnae_principal) || ''); const div = +c.slice(0,2);
@@ -1495,6 +1591,7 @@ function linhasCorrecao(){
     add(it,'aliqPis',    it.aliqPisOrig, it.aliqPis, it.fundPc||'');
     add(it,'aliqCofins', it.aliqCofinsOrig, it.aliqCofins, it.fundPc||'');
     add(it,'natRec',     it.natRecOrig, it.natRec, it.fundPc||'');
+    add(it,'estAb',      it.estAbOrig, it.estAb, it.fundEstAb||'');
   });
   return L;
 }
@@ -1540,7 +1637,10 @@ function abaResumo(){
             ['Substituição tributária e CEST conforme anexo do RICMS da UF do cliente'],
             ...(pcExtinto() ? [['PIS/Cofins: extintos a partir de 01/01/2027 (EC 132/2023 — ADCT, art. 126, II); campos não preenchidos']]
                : !TEM_EXCECOES_PC() ? [['PIS/Cofins: não preenchidos — aguardando a carga das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições (monofásico, alíquota zero, isenção, suspensão), sem as quais a regra geral erraria esses produtos']]
-               : [['PIS/Cofins: regra geral do regime e exceções por NCM das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições; válidos para fatos geradores até 31/12/2026']]),
+               : [['PIS/Cofins: regra geral do regime e exceções por NCM das tabelas '+[...new Set(REGRAS_PC.filter(r=>r.ncm).map(r=>r.tabela_sped))].sort().join(', ')
+                   +' da EFD-Contribuições; tabelas ainda não carregadas: '+['4.3.10','4.3.11','4.3.12','4.3.13','4.3.14','4.3.15','4.3.16','4.3.17'].filter(t=>!REGRAS_PC.some(r=>r.tabela_sped===t) && !TABELAS_PC.includes(t)).join(', ')
+                   +' — itens dessas tabelas recebem a regra geral; válidos para fatos geradores até 31/12/2026']]),
+            ...(estAbAtivo() ? [['Estoque de abertura da CBS: código da tabela "Descrição do Estoque de Abertura da CBS" (NT EFD-Contribuições 013/2026, Anexo V — conteúdo inicialmente previsto) para o registro F150, a escriturar até junho/2027']] : []),
             ['Este resumo é gerado pela ferramenta e não substitui a conferência final do responsável técnico']);
   return m;
 }
@@ -1650,6 +1750,7 @@ $('btnExportar').onclick = async ()=>{
         W(L,d.aliqCofins,it.aliqCofins,it,true);
         W(L,d.natRec,it.natRec,it,true);
         W(L,d.tribPc,it.tribPc,it);
+        W(L,d.estAb,it.estAb,it,true);
         if(++n%800===0) await new Promise(r=>setTimeout(r,0));
       }
       const dim=doc.getElementsByTagName('dimension')[0];
@@ -1679,7 +1780,7 @@ $('btnExportar').onclick = async ()=>{
     row[d.ctCbs]=it.ct; row[d.dsCbs]=it.ctDesc; row[d.cstCbs]=it.cstTrib;
     row[d.ctIbs]=it.ct; row[d.dsIbs]=it.ctDesc; row[d.cstIbs]=it.cstTrib;
     row[d.cstPis]=it.cstPis||''; row[d.cstPisE]=it.cstPisE||''; row[d.aliqPis]=it.aliqPis||'';
-    row[d.aliqCofins]=it.aliqCofins||''; row[d.natRec]=it.natRec||''; });
+    row[d.aliqCofins]=it.aliqCofins||''; row[d.natRec]=it.natRec||''; row[d.estAb]=it.estAb||''; });
   const wb2=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(aoa), SHEET);
   const corr=abaCorrecoes();
   XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(corr), 'CORREÇÕES APLICADAS');
