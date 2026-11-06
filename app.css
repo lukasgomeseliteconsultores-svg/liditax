@@ -42,6 +42,18 @@ p{margin:4px 0 0;color:var(--ink2);font-size:13px}
 .muted{color:var(--ink2);font-size:12.5px}
 .spacer{flex:1}
 
+/* marca do produto: LidiTax (símbolo Monograma) — endosso Elite */
+.marca-produto{display:flex;align-items:center;gap:12px}
+.marca-produto .simbolo{width:40px;height:40px;flex-shrink:0;display:block}
+.nome-produto{font:500 26px/1 "Montserrat","Inter",sans-serif;color:#fff;letter-spacing:-.01em}
+.nome-produto b{font-weight:700}
+.nome-produto span{color:var(--gold)}
+.marca-produto .endosso{font:500 11.5px/1.35 "Inter",sans-serif;color:#c9d3e0;margin-top:5px}
+.nav-marca{padding:6px 4px 18px;margin-bottom:10px;border-bottom:1px solid rgba(214,154,33,.55)}
+.nav-marca .simbolo{width:32px;height:32px}
+.nav-marca .nome-produto{font-size:22px}
+.endosso-elite{display:flex;flex-direction:column;gap:6px;font:500 10.5px "Inter";color:var(--nav-ink2);letter-spacing:.04em;margin-bottom:12px}
+.endosso-elite svg.lockup{width:120px;height:auto;display:block}
 /* marca: lockup Elite + nome do produto */
 .marca{display:flex;align-items:center;gap:12px}
 .marca svg.lockup{height:26px;width:auto;display:block}

@@ -1,5 +1,5 @@
 /* ============================================================
-   CADASTRO FISCAL · ELITE (nome do produto em definição — ver NOME_PRODUTO)
+   LIDITAX · uma solução Elite Consultoria Contábil
    Front-end do preenchimento de cadastro fiscal de produtos.
    Banco: Supabase (projeto mix-fiscal-elite, região sa-east-1)
    ============================================================ */
@@ -10,8 +10,7 @@ const SB_KEY  = 'sb_publishable_U4WfRm7NFfhY86yLHAjPZw_9mFW5Es0';
 const sb = supabase.createClient(SB_URL, SB_KEY);
 
 /* nome do produto: troque aqui quando o nome definitivo for escolhido */
-const NOME_PRODUTO = {nome:'Cadastro Fiscal', sub:'Classificação tributária de produtos', arquivo:'cadastro_fiscal'};
-document.querySelectorAll('[data-produto]').forEach(e=>{ e.firstChild.textContent = NOME_PRODUTO.nome; const sm=e.querySelector('small'); if(sm) sm.textContent=NOME_PRODUTO.sub; });
+const NOME_PRODUTO = {nome:'LidiTax', sub:'Classificação tributária de produtos', arquivo:'liditax'};
 document.title = NOME_PRODUTO.nome+' · Elite';
 const $  = id => document.getElementById(id);
 const norm = s => (s??'').toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');

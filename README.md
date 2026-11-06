@@ -1,4 +1,4 @@
-# MIX Fiscal — ELITE
+# LidiTax — classificação tributária de produtos (uma solução Elite Consultoria Contábil)
 
 Ferramenta interna de preenchimento e correção de cadastro fiscal de produtos
 (NCM, CST/CSOSN, CFOP de entrada e saída, cClassTrib de IBS e CBS).
