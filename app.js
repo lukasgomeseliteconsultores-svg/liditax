@@ -571,6 +571,10 @@ function pisCofinsDoItem(item, cliente){
   const n8 = dig(item.ncm||'');
   if(!exc && !REGRAS_PC.some(r=>r.tabela_sped==='4.3.12') && (n8.startsWith('8711') || n8.startsWith('2402')))
     out.rev = 'PIS/Cofins: produto com substituição tributária das contribuições (tabela 4.3.12, CST 05), tabela ainda não carregada — conferir';
+  // regra que só vale para varejista e o CNAE do cliente não é de varejo: fica a regra geral, mas avisa
+  const soVarejo = !exc && REGRAS_PC.find(r=>r.ncm && r.atividade==='varejo' && n8.startsWith(r.ncm));
+  if(soVarejo) out.rev = 'PIS/Cofins: o código '+soVarejo.natureza_receita+' da tabela '+soVarejo.tabela_sped
+      +' só vale para comerciante varejista e o CNAE principal do cliente não é de varejo — aplicada a regra geral; conferir';
   if(reg==='simples'){
     if(exc && exc.cst_pis==='04'){ out.trib='Monofásica — segregar a receita no PGDAS-D'; out.nat=exc.natureza_receita||''; }
     else if(exc && exc.cst_pis==='06'){ out.trib='Alíquota zero (código '+(exc.natureza_receita||'')+' da tabela 4.3.13) — conferir o tratamento no PGDAS-D'; out.nat=exc.natureza_receita||''; }
@@ -615,7 +619,11 @@ function estoqueAbertura(item, cliente, pc){
   if(reg==='simples'){ out.fund='Simples Nacional: crédito do estoque de abertura só para quem optar pelo regime regular do IBS/CBS — '+base; return out; }
   if(ehIndustria(cliente) && reg==='real'){ out.fund='Indústria no Lucro Real: estoque já gerou crédito básico — '+base; return out; }
   // aquisição com alíquota zero, isenção, suspensão ou sem incidência não dá crédito presumido
-  if(exc && ['06','07','08','09'].includes(exc.cst_pis)){ out.cod='—'; out.fund='Sem crédito presumido: aquisição com '+(CST_PC_ROTULO[exc.cst_pis]||'').toLowerCase()+' — '+base; return out; }
+  // alíquota zero da 4.3.13 vale para toda a cadeia: a aquisição também foi a zero → sem crédito
+  if(exc && exc.cst_pis==='06'){ out.cod='—'; out.fund='Sem crédito presumido: aquisição com alíquota zero (código '+(exc.natureza_receita||'')+' da tabela 4.3.13) — '+base; return out; }
+  // isenção, suspensão e não incidência da tabela dependem da operação de venda: a aquisição pode ter sido tributada
+  if(exc && ['07','08','09'].includes(exc.cst_pis))
+    out.rev='Estoque de abertura: confirmar se a aquisição deste item foi tributada (a '+(CST_PC_ROTULO[exc.cst_pis]||'').toLowerCase()+' da tabela '+exc.tabela_sped+' trata da venda); aquisição com isenção, suspensão ou sem incidência não dá crédito presumido';
   if(reg==='presumido'){
     out.cod = importado ? '2' : '1';
     out.fund = ESTAB_ROTULO[out.cod]+' — '+base;
@@ -624,11 +632,16 @@ function estoqueAbertura(item, cliente, pc){
   }
   if(reg==='real'){
     let cod='';
-    if(exc && exc.codigo_origem==='201') cod='5';
-    else if(exc && exc.codigo_origem==='202'){ cod='5'; out.rev='Estoque de abertura: a NT descreve o código 5 como "Medicamentos (inciso I do art. 1º da Lei 10.147/2000)"; o inciso I também abrange perfumaria — confirmar se este item entra'; }
-    else if(exc && ['301','302','303','304'].includes(exc.codigo_origem)) cod='6';
-    else if(ncm.startsWith('8711')) cod='7';
-    else if(ncm.startsWith('240220')){ cod='8'; out.rev='Estoque de abertura: cigarros pela NCM 2402.20 da TIPI — conferir'; }
+    const tab = exc && exc.tabela_sped, co = exc && exc.codigo_origem;
+    if(tab==='4.3.10' && co==='201') cod='5';
+    else if(tab==='4.3.10' && co==='202'){ cod='5'; out.rev='Estoque de abertura: a NT descreve o código 5 como "Medicamentos (inciso I do art. 1º da Lei 10.147/2000)"; o inciso I também abrange perfumaria — confirmar se este item entra'; }
+    else if(tab==='4.3.10' && ['301','302','303','304'].includes(co)) cod='6';
+    else if(tab==='4.3.12' && co==='201') cod='7';
+    else if(tab==='4.3.12' && co==='301'){ cod='7'; out.rev='Estoque de abertura: o código 7 da NT cita o art. 43 da MP 2.158-35/2001 (que também alcança o 8432.30), mas descreve só motocicletas — conferir'; }
+    else if(tab==='4.3.12' && co==='101') cod='8';
+    else if(tab==='4.3.12' && co==='102'){ cod='8'; out.rev='Estoque de abertura: a NT descreve o código 8 como cigarros (art. 53 da Lei 9.532/1997); cigarrilhas estão no art. 6º da Lei 12.402/2011 — conferir'; }
+    else if(!exc && ncm.startsWith('8711')) cod='7';
+    else if(!exc && ncm.startsWith('240220')){ cod='8'; out.rev='Estoque de abertura: cigarros pela NCM 2402.20 da TIPI — conferir'; }
     if(!cod){ out.fund='Lucro Real: mercadoria com crédito básico na aquisição, sem crédito presumido de estoque — '+base; return out; }
     if(importado){ out.rev=(out.rev?out.rev+' · ':'')+'Estoque de abertura: os códigos 5 a 8 são para bens nacionais e o CST do ICMS indica importação direta — conferir'; }
     out.cod=cod; out.fund=ESTAB_ROTULO[cod]+' — '+base;

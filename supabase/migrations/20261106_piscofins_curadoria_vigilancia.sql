@@ -11,3 +11,9 @@
 -- Carga do trilho federal a partir das tabelas enviadas no chat: 4.3.10 (revenda monofásica CST 04 e fabricante CST 02),
 -- 4.3.13 v1.37 (alíquota zero CST 06, inclusive o código 918 só para varejista); 4.3.11 v1.35 e 4.3.17 conferidas sem regra nova;
 -- NT EFD-Contribuições 013/2026 registrada (estoque de abertura da CBS — registro F150). 183 regras em situação "pendente".
+
+-- 06/11/2026 (fim da manhã): segunda carga do trilho federal (166 regras, pendentes):
+-- autopeças dos Anexos I e II da Lei 10.485/2002 (revenda CST 04/natureza 003; fabricante CST 02, condicional),
+-- 4.3.12 (CST 05 — cigarros, cigarrilhas, motocicletas e 8432.30, só varejista), 4.3.16 código 213 (soja, condicional),
+-- 4.3.14 código 904 (resíduos, condicional); revenda de querosene de aviação e biodiesel passou para CST 08 (4.3.15).
+-- 4.3.14, 4.3.15 e 4.3.16 conferidas: os demais códigos dependem da operação, do comprador ou de regime especial.
