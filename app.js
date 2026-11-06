@@ -1,5 +1,5 @@
 /* ============================================================
-   MIX FISCAL · ELITE
+   CADASTRO FISCAL · ELITE (nome do produto em definição — ver NOME_PRODUTO)
    Front-end do preenchimento de cadastro fiscal de produtos.
    Banco: Supabase (projeto mix-fiscal-elite, região sa-east-1)
    ============================================================ */
@@ -9,6 +9,10 @@ const SB_KEY  = 'sb_publishable_U4WfRm7NFfhY86yLHAjPZw_9mFW5Es0';
 // do portal, na tela "Acessos". O banco valida a aprovação por RLS.
 const sb = supabase.createClient(SB_URL, SB_KEY);
 
+/* nome do produto: troque aqui quando o nome definitivo for escolhido */
+const NOME_PRODUTO = {nome:'Cadastro Fiscal', sub:'Classificação tributária de produtos', arquivo:'cadastro_fiscal'};
+document.querySelectorAll('[data-produto]').forEach(e=>{ e.firstChild.textContent = NOME_PRODUTO.nome; const sm=e.querySelector('small'); if(sm) sm.textContent=NOME_PRODUTO.sub; });
+document.title = NOME_PRODUTO.nome+' · Elite';
 const $  = id => document.getElementById(id);
 const norm = s => (s??'').toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
 const dig  = s => (s??'').toString().replace(/\D/g,'');
@@ -1808,7 +1812,7 @@ $('btnCsv').onclick=()=>{
   const l=[h.join(';')].concat(ITENS.map(i=>[i.i+1,`"${(i.desc||'').replace(/"/g,'""')}"`,i.ncmOrig,i.ncm,
     SIT[i.status][1],i.cst,i.cfopS,i.cfopE,i.ct,i.cstTrib,i.red||'',
     `"${[i.ncmMsg,i.nota,i.notaFiscal].filter(Boolean).join(' | ').replace(/"/g,'""')}"`].join(';')));
-  baixar(new Blob(['﻿'+l.join('\n')],{type:'text/csv;charset=utf-8'}),'relatorio_mix_fiscal.csv');
+  baixar(new Blob(['﻿'+l.join('\n')],{type:'text/csv;charset=utf-8'}),'relatorio_'+NOME_PRODUTO.arquivo+'.csv');
 };
 function baixar(blob,nome){ const u=URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=u; a.download=nome; document.body.appendChild(a); a.click();
