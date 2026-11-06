@@ -443,7 +443,7 @@ async function sugestoesPorDescricao(descricoes){
   return mapa;
 }
 const fmtNcm = n => n && n.length===8 ? n.slice(0,4)+'.'+n.slice(4,6)+'.'+n.slice(6) : (n&&n.length===4 ? n.slice(0,2)+'.'+n.slice(2) : (n||''));
-const FONTE_SUG = {cest_rn:'descrição do Anexo 007 do RICMS/RN', nomenclatura:'nomenclatura oficial (NCM)', memoria:'memória da equipe'};
+const FONTE_SUG = {cest_rn:'descrição do Anexo 007 do RICMS/RN', cest_nacional:'descrição do CEST no Conv. ICMS 142/2018', nomenclatura:'nomenclatura oficial (NCM)', memoria:'memória da equipe'};
 function avaliarDescricaoNcm(item, sugs){
   if(!sugs || !sugs.length || !ESCOPO.ncm) return;
   const [a, b] = sugs;
@@ -469,6 +469,43 @@ function avaliarDescricaoNcm(item, sugs){
   }
 }
 
+/* Referências de apoio (tabelasfiscais.com.br, não oficial): CEST do Conv. ICMS
+   142/2018 com os NCM de cada CEST e a tabela de CFOP. Servem para sugerir e
+   conferir — nunca para declarar erro, porque a lista de NCM por CEST é
+   incompleta em alguns casos (ex.: água mineral sem 2201.90.00). */
+const CEST_NAC = new Map(); let CEST_NCM = []; const CFOP_TAB = new Map();
+async function carregarReferencias(){
+  const [cs, cn, cf] = await Promise.all([
+    carregarTodos('cest_nacional','cest,descricao,segmento', q=>q.order('cest')),
+    carregarTodos('cest_nacional_ncm','cest,ncm', q=>q.order('cest').order('ncm')),
+    carregarTodos('cfop_tabela','cfop,descricao', q=>q.order('cfop'))]);
+  CEST_NAC.clear(); cs.forEach(r=>CEST_NAC.set(r.cest, r));
+  CEST_NCM = cn.filter(r=>CEST_NAC.has(r.cest));
+  CFOP_TAB.clear(); cf.forEach(r=>CFOP_TAB.set(r.cfop, r.descricao));
+}
+const fmtCest = c => c && c.length===7 ? `${c.slice(0,2)}.${c.slice(2,5)}.${c.slice(5)}` : c;
+const PAL_CEST_NAO = new Set(['outros','outras','para','com','sem','uso','exceto','inclusive','produtos','artigos','tipo','qualquer','destinados','destinadas','partes','acessorios']);
+const palavrasCest = t => new Set(norm(t).split(/[^a-z0-9]+/).filter(p=>p.length>=4 && !PAL_CEST_NAO.has(p)).map(p=>p.replace(/(oes|aes)$/,'ao').replace(/s$/,'')));
+/* CEST nacionais cujo NCM (ou prefixo) abrange o NCM do item; separa os que a descrição confirma. */
+function cestNacionalDoItem(ncm, desc){
+  const n = dig(ncm); if(n.length!==8 || !CEST_NCM.length) return {todos:[], casam:[]};
+  const cods = [...new Set(CEST_NCM.filter(r=>n.startsWith(r.ncm)).map(r=>r.cest))];
+  const todos = cods.map(c=>CEST_NAC.get(c)).filter(c=>c && !String(c.segmento||'').startsWith('28'));   // 28: venda porta a porta
+  const pd = palavrasCest(desc);
+  // palavras depois de "exceto" descrevem o que o CEST NÃO abrange — não servem para casar
+  const abrange = t => String(t||'').replace(/\(\s*exceto[^)]*\)/gi,' ').replace(/,?\s*exceto\b.*$/i,' ');
+  const casam = todos.filter(c=>[...palavrasCest(abrange(c.descricao))].some(p=>pd.has(p)));
+  return {todos, casam};
+}
+/* CFOP: confere existência e sentido (saída 5/6/7, entrada 1/2/3). */
+function conferirCfop(cfop, sentido){
+  const c = dig(cfop); if(!c || !CFOP_TAB.size) return '';
+  if(c.length!==4 || !CFOP_TAB.has(c)) return `CFOP ${cfop} não existe na tabela de CFOP`;
+  if(sentido==='saida' && !'567'.includes(c[0])) return `CFOP ${cfop} é de entrada, mas está na coluna de saída`;
+  if(sentido==='entrada' && !'123'.includes(c[0])) return `CFOP ${cfop} é de saída, mas está na coluna de entrada`;
+  return '';
+}
+
 async function carregarBase(){
   const [{data:anexos}, {data:metas}] = await Promise.all([
     carregarTodos('ibs_cbs_anexo','ncm,cclasstrib,cst,exige,exclui,condicao', q=>q.order('id')).then(data=>({data})),
@@ -479,6 +516,7 @@ async function carregarBase(){
   (metas||[]).forEach(m=>META.set(m.cclasstrib,m));
   const tipi = await carregarTodos('tipi','ncm', q=>q.order('ncm'));
   TIPI.clear(); tipi.forEach(r=>TIPI.add(String(r.ncm).trim()));
+  await carregarReferencias().catch(e=>console.warn('referências CEST/CFOP:',e));
   await carregarOverrides();
   await Promise.all([carregarST(), carregarRegrasICMS().catch(e=>console.warn('regras ICMS:',e)),
                      carregarRegrasPisCofins().catch(e=>console.warn('regras PIS/COFINS:',e))]);
@@ -1097,9 +1135,26 @@ $('btnRodar').onclick = async ()=>{
       if(!item.st.confirmado){
         item.nota = (item.nota?item.nota+' · ':'') + `NCM com ${item.st.alternativas} CEST possíveis no anexo — confirme pela descrição`;
       }
-    } else if(item.cestOrig){
-      item.cestDivergente = true;
-      item.nota = (item.nota?item.nota+' · ':'') + 'Planilha traz CEST, mas o NCM não consta no anexo de ST da UF';
+    } else {
+      // sem ST na UF: o CEST continua obrigatório na NF-e se o item constar dos Anexos II a XXVI
+      // do Conv. ICMS 142/2018 (cláusula vigésima, I) — tabela de apoio, por isso fica a conferir
+      const cn = cestNacionalDoItem(item.ncm, item.desc), co = dig(item.cestOrig);
+      const add = t => { item.nota = (item.nota?item.nota+' · ':'') + t; };
+      const CL = 'obrigatório na NF-e mesmo sem ST (Conv. ICMS 142/2018, cl. vigésima, I)';
+      if(co){
+        if(cn.todos.some(c=>c.cest===co)){ item.cest = co; item.cestNacional = true;
+          add(`CEST ${fmtCest(co)} mantido: o NCM não tem ST no RN, mas o CEST é ${CL}`); }
+        else { item.cestDivergente = true;
+          add(CEST_NAC.has(co) ? `CEST ${fmtCest(co)} existe no Conv. 142/2018, mas não é associado a este NCM na tabela de apoio — confira`
+               : CEST_NAC.size ? `CEST ${fmtCest(co)} não consta da tabela do Conv. ICMS 142/2018 nem do anexo de ST da UF`
+               : 'Planilha traz CEST, mas o NCM não consta no anexo de ST da UF'); }
+      } else if(cn.casam.length===1){
+        const c = cn.casam[0]; item.cest = c.cest; item.cestNacional = true; item.cestSugNac = true;
+        add(`CEST ${fmtCest(c.cest)} sugerido pelo Conv. ICMS 142/2018 (${String(c.descricao).slice(0,70)}) — sem ST no RN, mas ${CL}. Confira`);
+      } else if(cn.casam.length>1){
+        item.cestSugNac = true;
+        add(`NCM consta do Conv. ICMS 142/2018 com ${cn.casam.length} CEST possíveis (${cn.casam.slice(0,4).map(c=>fmtCest(c.cest)).join(', ')}) — o CEST é ${CL}; escolha pela descrição`);
+      }
     }
     const a = classificarIbsCbs(item.ncm, item.desc);
     item.ct=a.ct; item.cstTrib=a.cst; item.ctDesc=a.desc; item.red=a.red; item.regra=a.regra;
@@ -1108,7 +1163,7 @@ $('btnRodar').onclick = async ()=>{
     const ic = icmsDoItem(item, CLIENTE);
     item.aliq=ic.aliq; item.redBc=ic.red; item.fundIcms=ic.fund; item.especieIcms=ic.especie; item.cstIcms=ic.cst;
     item.aliqOrig = MAPA.aliq!=='' && MAPA.aliq!==undefined ? (r[MAPA.aliq]+'').trim() : '';
-    item.mva = mvaDoCest(item.cest);
+    item.mva = item.st ? mvaDoCest(item.cest) : '';
     const f = fiscalPorRegime(item, CLIENTE);
     if(item.st && !ehIndustria(CLIENTE)){
       // comércio com ST: o ICMS foi retido antes; não há destaque de alíquota no cadastro
@@ -1120,6 +1175,8 @@ $('btnRodar').onclick = async ()=>{
     item.cstSug = !item.cstOrig;
     item.cfopS = item.cfopSOrig || f.cfopS; item.cfopSSug = !item.cfopSOrig;
     item.cfopE = f.cfopE; item.cfopESug = true;   // vazio em toda a planilha: sempre sugestão
+    item.cfopErro = conferirCfop(item.cfopSOrig, 'saida');
+    if(item.cfopErro) item.nota = (item.nota?item.nota+' · ':'') + item.cfopErro;
     item.notaFiscal = f.nota;
     const pc = pisCofinsDoItem(item, CLIENTE);
     item.cstPis=pc.cst; item.cstPisE=pc.cstE; item.aliqPis=pc.aliqPis; item.aliqCofins=pc.aliqCofins;
@@ -1140,7 +1197,7 @@ $('btnRodar').onclick = async ()=>{
     }
     item.status = item.ncmStatus==='err' ? 'err'
                 : (item.confIbs==='rev' || item.ncmStatus==='rev' || (ESCOPO.pis && (item.revPc || item.revEstAb))
-                   || item.cestDivergente || (item.st && !item.st.confirmado)) ? 'rev' : 'ok';
+                   || item.cestDivergente || item.cestSugNac || item.cfopErro || (item.st && !item.st.confirmado)) ? 'rev' : 'ok';
     ITENS.push(item);
   });
   detectarNcmGenerico(ITENS);
@@ -1702,6 +1759,9 @@ function abaResumo(){
     ['Campos corrigidos', L.length],
     ['NCM preenchidos pela descrição (a conferir)', ITENS.filter(i=>i.ncmPorDescricao).length],
     ['NCM que podem não corresponder à descrição', ITENS.filter(i=>i.ncmIncoerente).length],
+    ['CEST pelo Conv. ICMS 142/2018 sem ST no RN (a conferir)', ITENS.filter(i=>i.cestSugNac).length],
+    ['CEST mantido pelo Conv. ICMS 142/2018 (sem ST no RN)', ITENS.filter(i=>i.cestNacional && !i.cestSugNac).length],
+    ['CFOP inexistente ou no sentido errado', ITENS.filter(i=>i.cfopErro).length],
     ...(DIV.length?[['Divergências mantidas (modo só preencher vazios)', DIV.length]]:[]),
     ['Itens que vieram da memória da equipe', ITENS.filter(i=>i.memoriaGravada).length],
     ['Itens que seguem pendentes de revisão', ITENS.filter(i=>i.status==='rev'||i.ncmStatus==='erro').length],
