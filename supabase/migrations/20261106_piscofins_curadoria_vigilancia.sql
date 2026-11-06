@@ -1,0 +1,8 @@
+-- Aplicadas no projeto mix-fiscal-elite em 06/11/2026 (Sprints 4 a 9).
+-- Ver o SQL completo no histórico de migrações do Supabase:
+--   fed_piscofins_entrada_e_tabela  — fed_regra.cst_entrada e fed_regra.tabela_sped
+--   curadoria_regras                — curado_por/curado_em/nota_curadoria e função curar_regra (só admin)
+--   vigilancia_fontes_hash          — tabela fonte_vigiada (RLS) e agendamento vigia-fontes-diario (dias úteis, 08h20 UTC)
+-- Dados carregados no trilho federal: Leis 10.637/2002, 10.833/2003, 9.715/1998, 9.718/1998 e EC 132/2023 (ADCT, art. 126, II),
+-- com as regras gerais de PIS/COFINS do Lucro Real e do Presumido em situação "pendente" (aprovar na Curadoria).
+-- Trilho estadual: MVA original das regras de ST conferida no Anexo 007 (atualizado até o Decreto 35.865/2026).

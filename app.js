@@ -131,6 +131,7 @@ async function entrar(){
   $('espera').hidden=true;
   $('gate').hidden=true; $('app').hidden=false;
   $('navAcessos').hidden = !EH_ADMIN;
+  $('navCuradoria').hidden = !EH_ADMIN;
   $('whoami').textContent = USER;
   await Promise.all([carregarBase(), carregarClientes()]);
   carregarAtos(); carregarMemoria();
@@ -142,9 +143,11 @@ document.querySelectorAll('.navitem').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.navitem').forEach(x=>x.classList.remove('on'));
   document.querySelectorAll('.tela').forEach(x=>x.classList.remove('on'));
   b.classList.add('on'); $('tela-'+b.dataset.tela).classList.add('on');
-  if(b.dataset.tela==='atualizacoes') carregarAtos();
+  if(b.dataset.tela==='atualizacoes'){ carregarAtos(); carregarFontes(); }
   if(b.dataset.tela==='base'){ carregarMemoria(); kpisBase(); }
   if(b.dataset.tela==='acessos') carregarAcessos();
+  if(b.dataset.tela==='curadoria') carregarCuradoria();
+  if(b.dataset.tela==='familias') montarFamilias();
   if(b.dataset.tela==='diagnostico') montarDiagnostico();
 });
 
@@ -235,6 +238,153 @@ async function decidir(email, status){
   carregarAcessos();
 }
 
+/* ============================ CURADORIA DAS REGRAS ============================
+   Cada trilho tem suas próprias tabelas (est_* e fed_*); a tela só alterna a fonte.
+   A decisão passa pela função curar_regra, que confere se quem decide é admin
+   e grava autor e data no servidor. */
+const CUR_ESPECIES = {estadual:['st','aliquota','reducao','isencao'], federal:['piscofins','ibscbs','ipi','ncm']};
+const CUR_ROTULO = {st:'Substituição tributária', aliquota:'Alíquota', reducao:'Redução de BC', isencao:'Isenção',
+                    piscofins:'PIS/COFINS', ibscbs:'IBS/CBS', ipi:'IPI', ncm:'NCM'};
+const SIT_REGRA = {pendente:'c-rev', aprovada:'c-ok', rejeitada:'c-err'};
+let CUR_DADOS = [], CUR_TRECHOS = new Map();
+['curTrilho','curSit','curEsp'].forEach(id=>{ const e=$(id); if(e) e.onchange=()=>{ if(id==='curTrilho') $('curEsp').value=''; carregarCuradoria(); }; });
+if($('curBusca')) $('curBusca').oninput=()=>tabelaCuradoria();
+if($('btnRecarregarCur')) $('btnRecarregarCur').onclick=()=>carregarCuradoria();
+function tratamentoRegra(t, r){
+  const pc = v => v===null||v===undefined ? '' : String(+v).replace('.',',')+'%';
+  if(t==='estadual'){
+    if(r.especie==='st') return 'ST'+(r.mva!=null?' · MVA '+pc(r.mva):'');
+    if(r.especie==='isencao') return 'Isento';
+    if(r.especie==='reducao') return 'Alíq. '+pc(r.aliquota)+' · redução '+pc(r.reducao_bc)+(r.carga!=null?' · carga '+pc(r.carga):'');
+    return 'Alíquota '+pc(r.aliquota);
+  }
+  if(r.especie==='piscofins') return [r.regime?('Regime '+r.regime):'Todos os regimes', 'CST '+(r.cst_pis||'—')+(r.cst_entrada?' / entrada '+r.cst_entrada:''),
+     (r.aliquota_pis!=null?'PIS '+pc(r.aliquota_pis):''), (r.aliquota_cofins!=null?'COFINS '+pc(r.aliquota_cofins):''),
+     (r.natureza_receita?'nat. '+r.natureza_receita:''), (r.tabela_sped?'Tab. '+r.tabela_sped:'')].filter(Boolean).join(' · ');
+  return [r.cclasstrib, r.cst_ibscbs, r.reducao].filter(Boolean).join(' · ');
+}
+/* ============================ FAMÍLIAS DE PRODUTO ============================
+   Família = mesmo NCM + mesmo nome principal da descrição ("ARROZ", "CERVEJA"...).
+   A tela mostra onde a família está incoerente e deixa decidir uma vez para todos
+   os itens dela, sempre pela prévia do lote (nada é gravado sem confirmar). */
+const FAM_CAMPOS = [['cest','CEST','cest'],['cst','CST/CSOSN ICMS','cst'],['cclasstrib','cClassTrib','ct'],
+                    ['cfop_saida','CFOP saída','cfopS'],['cfop_entrada','CFOP entrada','cfopE']];
+let FAMILIAS = [];
+if($('famBusca')) $('famBusca').oninput=()=>tabelaFamilias();
+if($('famSoDiv')) $('famSoDiv').onchange=()=>tabelaFamilias();
+function familiaDe(it){ const n=dig(it.ncm); return (n.length===8?n:'—')+'|'+(nucleoDesc(it.desc||'')||'(sem descrição)'); }
+function distintos(itens, prop){ const m=new Map(); itens.forEach(i=>{ const v=String(i[prop]??'').trim(); m.set(v,(m.get(v)||0)+1); });
+  return [...m.entries()].sort((a,b)=>b[1]-a[1]); }
+function montarFamilias(){
+  const tem = ITENS.length>0;
+  $('famVazio').hidden = tem; $('famCorpo').hidden = !tem;
+  if(!tem) return;
+  const g = new Map();
+  ITENS.forEach(it=>{ const k=familiaDe(it); if(!g.has(k)) g.set(k,[]); g.get(k).push(it); });
+  FAMILIAS = [...g.entries()].map(([k,itens])=>{
+    const [ncm,nome]=k.split('|');
+    const campos = Object.fromEntries(FAM_CAMPOS.map(([c,,prop])=>[c, distintos(itens,prop)]));
+    campos.aliq = distintos(itens,'aliq');
+    const diverge = Object.values(campos).some(d=>d.length>1);
+    return {k, ncm, nome, itens, campos, diverge, pend: itens.filter(i=>i.status==='rev'||i.status==='err').length};
+  }).sort((a,b)=> (b.diverge-a.diverge) || (b.itens.length-a.itens.length));
+  tabelaFamilias();
+}
+function tabelaFamilias(){
+  const b=norm($('famBusca').value||''), so=$('famSoDiv').checked;
+  const L = FAMILIAS.filter(f=>(!so||f.diverge) && (!b || norm(f.nome+' '+f.ncm+' '+f.itens.map(i=>i.desc).join(' ')).includes(b)));
+  $('famInfo').textContent = `${L.length} família(s) · ${FAMILIAS.filter(f=>f.diverge).length} com divergência interna`;
+  const cel = d => d.length>1 ? `<span class="chip c-rev" title="${esc(d.map(([v,n])=>(v||'(vazio)')+': '+n).join(' · '))}">${d.length} valores</span>`
+                             : `<span class="mono">${esc(d[0]&&d[0][0]||'—')}</span>`;
+  $('tbFam').innerHTML = L.length ? L.slice(0,400).map((f,ix)=>`<tr>
+      <td><b>${esc(f.nome.toUpperCase())}</b><br><span class="muted">${esc((f.itens[0].desc||'').slice(0,60))}${f.itens.length>1?' …':''}</span></td>
+      <td class="mono">${esc(f.ncm)}</td><td>${f.itens.length}</td>
+      <td>${cel(f.campos.cest)}</td><td>${cel(f.campos.cst)}</td><td>${cel(f.campos.aliq)}</td><td>${cel(f.campos.cclasstrib)}</td>
+      <td>${f.pend?`<span class="chip c-rev">${f.pend} a revisar</span>`:'<span class="chip c-ok">ok</span>'}</td>
+      <td class="fam-vinc"><select data-fam="${esc(f.k)}" class="famCampo">${FAM_CAMPOS.map(([c,r])=>`<option value="${c}">${r}</option>`).join('')}</select>
+          <input class="mono famValor" data-fam="${esc(f.k)}" size="9" value="${esc(f.campos.cest[0][0])}">
+          <button class="btn quiet famAplicar" data-fam="${esc(f.k)}">Aplicar à família</button></td>
+    </tr>`).join('') : '<tr><td colspan="9" class="muted">Nenhuma família nesta seleção.</td></tr>';
+  const acha = k=>FAMILIAS.find(f=>f.k===k);
+  $('tbFam').querySelectorAll('select.famCampo').forEach(sel=>sel.onchange=()=>{
+    const f=acha(sel.dataset.fam), inp=sel.parentElement.querySelector('.famValor');
+    inp.value = (f.campos[sel.value][0]||[''])[0];       // sugere o valor mais comum da família
+  });
+  $('tbFam').querySelectorAll('button.famAplicar').forEach(btn=>btn.onclick=async()=>{
+    const f=acha(btn.dataset.fam), box=btn.parentElement;
+    const campo=box.querySelector('.famCampo').value, valor=box.querySelector('.famValor').value.trim();
+    if(!valor){ toast('Informe o valor para a família.'); return; }
+    const n = await aplicarEmLote(campo, valor, new Set(f.itens.map(chaveItem)), false);
+    toast(n ? `<b>${n}</b> item(ns) da família <b>${esc(f.nome.toUpperCase())}</b> atualizados e gravados na memória.` : 'Nenhuma alteração aplicada.');
+    montarFamilias();
+  });
+}
+
+async function carregarCuradoria(){
+  if(!EH_ADMIN) return;
+  const t=$('curTrilho').value, sit=$('curSit').value;
+  const esp=$('curEsp');
+  if(esp.options.length<=1 || esp.dataset.trilho!==t){
+    esp.innerHTML='<option value="">Todas as espécies</option>'+CUR_ESPECIES[t].map(e=>`<option value="${e}">${CUR_ROTULO[e]}</option>`).join('');
+    esp.dataset.trilho=t;
+  }
+  let q = sb.from(t==='estadual'?'est_regra':'fed_regra').select('*').order('id').limit(3000);
+  if(sit) q=q.eq('situacao',sit);
+  if(esp.value) q=q.eq('especie',esp.value);
+  const {data, error} = await q;
+  if(error){ $('tbCur').innerHTML=`<tr><td colspan="8" class="muted">${esc(error.message)}</td></tr>`; return; }
+  CUR_DADOS = data||[];
+  // contagem por situação do trilho inteiro
+  const {data:todas} = await sb.from(t==='estadual'?'est_regra':'fed_regra').select('situacao').limit(5000);
+  const c={pendente:0,aprovada:0,rejeitada:0}; (todas||[]).forEach(x=>{ if(c[x.situacao]!==undefined) c[x.situacao]++; });
+  $('kpisCur').innerHTML=[['k-rev',c.pendente,'Aguardando curadoria'],['k-ok',c.aprovada,'Aprovadas'],['k-err',c.rejeitada,'Rejeitadas']]
+    .map(([cl,v,l])=>`<button class="kpi ${cl}" disabled><div class="v">${v}</div><div class="l">${l}</div></button>`).join('');
+  tabelaCuradoria();
+}
+function tabelaCuradoria(){
+  const t=$('curTrilho').value, b=norm($('curBusca').value||'');
+  const L = CUR_DADOS.filter(r=>!b || norm([r.ncm,r.cest,r.descricao,r.fundamento,r.condicao].join(' ')).includes(b));
+  $('curInfo').textContent = L.length+' regra(s)';
+  const vig = r => (r.vigencia_inicio? r.vigencia_inicio.split('-').reverse().join('/') : '—')+' a '+(r.vigencia_fim? r.vigencia_fim.split('-').reverse().join('/') : 'sem fim');
+  $('tbCur').innerHTML = L.length ? L.slice(0,600).map(r=>`<tr>
+      <td>${esc(CUR_ROTULO[r.especie]||r.especie)}</td>
+      <td class="mono">${esc(r.ncm||'—')}${r.cest?'<br><span class="muted">CEST '+esc(r.cest)+'</span>':''}</td>
+      <td>${esc((r.descricao||'').slice(0,90))}${(r.exige&&r.exige.length)?'<br><span class="muted">exige: '+esc(r.exige.join(', '))+'</span>':''}${(r.exclui&&r.exclui.length)?'<br><span class="muted">exclui: '+esc(r.exclui.join(', '))+'</span>':''}</td>
+      <td>${esc(tratamentoRegra(t,r))}</td>
+      <td>${esc(r.fundamento||'')}${r.condicao?'<br><span class="muted">'+esc(r.condicao.slice(0,180))+'</span>':''}
+          ${r.trecho_id?`<br><button class="btn link" data-trecho="${r.trecho_id}">ver trecho do documento</button><div class="trecho" id="tr-${t}-${r.id}" hidden></div>`:''}</td>
+      <td class="mono">${vig(r)}</td>
+      <td><span class="chip ${SIT_REGRA[r.situacao]||'c-intg'}">${esc(r.situacao)}</span>${r.curado_por?'<br><span class="muted">'+esc(r.curado_por.split('@')[0])+' · '+String(r.curado_em||'').slice(0,10)+'</span>':''}</td>
+      <td>${r.situacao!=='aprovada'?`<button class="btn quiet" data-cur="aprovada" data-id="${r.id}">Aprovar</button>`:''}
+          ${r.situacao!=='rejeitada'?`<button class="btn link" data-cur="rejeitada" data-id="${r.id}">Rejeitar</button>`:''}
+          ${r.situacao!=='pendente'?`<button class="btn link" data-cur="pendente" data-id="${r.id}">Voltar a pendente</button>`:''}</td>
+    </tr>`).join('') + (L.length>600?`<tr><td colspan="8" class="muted">Mostrando 600 de ${L.length}. Use a busca para refinar.</td></tr>`:'')
+    : '<tr><td colspan="8" class="muted">Nenhuma regra nesta seleção.</td></tr>';
+  $('tbCur').querySelectorAll('button[data-cur]').forEach(btn=>btn.onclick=()=>curar(+btn.dataset.id, btn.dataset.cur));
+  $('tbCur').querySelectorAll('button[data-trecho]').forEach(btn=>btn.onclick=async()=>{
+    const box=btn.nextElementSibling; if(!box) return;
+    if(!box.hidden){ box.hidden=true; return; }
+    const id=+btn.dataset.trecho, chave=t+'|'+id;
+    if(!CUR_TRECHOS.has(chave)){
+      const {data} = await sb.from(t==='estadual'?'est_trecho':'fed_trecho').select('referencia,texto,marca,pagina').eq('id',id).maybeSingle();
+      CUR_TRECHOS.set(chave, data);
+    }
+    const tr=CUR_TRECHOS.get(chave);
+    box.innerHTML = tr ? `<b>${esc(tr.referencia||'')}</b>${tr.pagina?' · pág. '+tr.pagina:''}${tr.marca?' · '+esc(tr.marca):''}<br>${esc(tr.texto||'')}` : 'Trecho não encontrado.';
+    box.hidden=false;
+  });
+}
+async function curar(id, situacao){
+  const t=$('curTrilho').value;
+  let nota=null;
+  if(situacao==='rejeitada'){ nota = prompt('Motivo da rejeição (fica registrado):',''); if(nota===null) return; }
+  const {error} = await sb.rpc('curar_regra',{p_trilho:t, p_id:id, p_situacao:situacao, p_nota:nota});
+  if(error){ toast('Não foi possível registrar: '+esc(error.message)); return; }
+  toast(`Regra <b>${id}</b> marcada como <b>${situacao}</b>. Ela ${situacao==='aprovada'?'passa a valer':'deixa de valer'} no próximo processamento.`);
+  await carregarCuradoria();
+  carregarBase();   // recarrega as regras em uso
+}
+
 /* ============================ BASE DE REFERÊNCIA ============================ */
 async function carregarBase(){
   const [{data:anexos}, {data:metas}] = await Promise.all([
@@ -247,7 +397,8 @@ async function carregarBase(){
   const {data:tipi} = await sb.from('tipi').select('ncm').limit(20000);
   TIPI.clear(); (tipi||[]).forEach(r=>TIPI.add(r.ncm));
   await carregarOverrides();
-  await Promise.all([carregarST(), carregarRegrasICMS().catch(e=>console.warn('regras ICMS:',e))]);
+  await Promise.all([carregarST(), carregarRegrasICMS().catch(e=>console.warn('regras ICMS:',e)),
+                     carregarRegrasPisCofins().catch(e=>console.warn('regras PIS/COFINS:',e))]);
   kpisBase();
 }
 function kpisBase(){
@@ -273,7 +424,7 @@ async function carregarST(){
   const uf = (CLIENTE && CLIENTE.uf) || 'RN';
   // trilho estadual: só regra aprovada e dentro da vigência
   const {data:nova} = await sb.from('est_regra_vigente')
-    .select('cest,ncm,descricao,fundamento,vigencia_inicio,trecho_id')
+    .select('cest,ncm,descricao,fundamento,vigencia_inicio,trecho_id,mva')
     .eq('uf',uf).eq('especie','st').limit(5000);
   let linhas = (nova||[]).filter(x=>x.ncm).map(x=>({...x, segmento:(x.cest||'').slice(0,2),
                  fundamento: x.fundamento + (x.vigencia_inicio? ' — vigente desde '+x.vigencia_inicio.split('-').reverse().join('/') : '')}));
@@ -325,9 +476,74 @@ function icmsDoItem(item, cliente){
   return out;
 }
 function mvaDoCest(cest){
-  if(!cest || !MVA.length) return '';
+  if(!cest) return '';
+  // trilho estadual: MVA original conferida no Anexo 007 vigente, gravada na própria regra de ST
+  const r = ST.find(x=>x.cest===cest && x.mva!==null && x.mva!==undefined);
+  if(r) return String(+r.mva);
+  if(ST_FONTE==='trilho estadual' || !MVA.length) return '';
   const m = MVA.find(x=>x.cests.includes(cest));
   return m ? String(+m.mva_original) : '';
+}
+
+/* ---------- PIS/COFINS do produto (trilho federal — EFD-Contribuições) ----------
+   Regra geral por regime (Lei 10.637/2002 e 10.833/2003 no Real; Lei 9.715/1998 e
+   9.718/1998 no Presumido) e exceções por NCM das tabelas 4.3.10 a 4.3.17.
+   Só entra regra aprovada na curadoria e dentro da vigência (fed_regra_vigente).
+   A partir de 01/01/2027 PIS e Cofins deixam de existir (ADCT, art. 126, II). */
+let REGRAS_PC = [];
+async function carregarRegrasPisCofins(){
+  const {data} = await sb.from('fed_regra_vigente')
+    .select('ncm,regime,cst_pis,cst_cofins,cst_entrada,aliquota_pis,aliquota_cofins,natureza_receita,tabela_sped,exige,exclui,condicao,fundamento')
+    .eq('especie','piscofins').limit(5000);
+  REGRAS_PC = (data||[]).sort((a,b)=>(b.ncm||'').length-(a.ncm||'').length);
+}
+const PC_FIM = new Date('2027-01-01T00:00:00-03:00');
+const pcExtinto = ()=> new Date() >= PC_FIM;
+const TEM_EXCECOES_PC = ()=> REGRAS_PC.some(r=>r.ncm);
+// sem as exceções por NCM, a regra geral daria CST 01 a produto monofásico ou de alíquota zero:
+// por isso PIS/Cofins só é preenchido depois que as tabelas 4.3.10 a 4.3.17 estiverem carregadas
+const pcAtivo = ()=> !pcExtinto() && TEM_EXCECOES_PC();
+// Tabela de CST de PIS/COFINS (Guia Prático da EFD-Contribuições): saída → entrada correspondente
+const CST_PC_ENTRADA = {'01':'50','02':'50','03':'50','04':'70','05':'75','06':'73','07':'71','08':'74','09':'72'};
+const CST_PC_ROTULO = {'01':'Tributável — alíquota básica','02':'Tributável — alíquota diferenciada',
+  '03':'Tributável — por unidade de medida','04':'Monofásica — revenda a alíquota zero','05':'Substituição tributária',
+  '06':'Alíquota zero','07':'Isenta','08':'Sem incidência','09':'Suspensão','49':'Outras operações de saída'};
+function regimeFederal(cliente){
+  if(!cliente) return '';
+  if(cliente.regime==='simples' || cliente.opcao_simples || cliente.opcao_mei) return 'simples';
+  if(cliente.regime==='real') return 'real';
+  if(cliente.regime==='presumido' || cliente.regime==='arbitrado') return 'presumido';
+  return '';
+}
+const pcNum = v => (v===null || v===undefined || v==='') ? '' : String(+v).replace('.',',');
+function pisCofinsDoItem(item, cliente){
+  const out = {cst:'', cstE:'', aliqPis:'', aliqCofins:'', nat:'', trib:'', fund:''};
+  if(pcExtinto()){ out.fund='PIS/Cofins extintos a partir de 01/01/2027 (EC 132/2023 — ADCT, art. 126, II): campos não preenchidos'; return out; }
+  if(!TEM_EXCECOES_PC()){ out.fund='PIS/Cofins aguardando a carga das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições (exceções por NCM)'; return out; }
+  const reg = regimeFederal(cliente), ncm = item.ncm||'', d = norm(item.desc||'');
+  if(dig(ncm).length!==8) return out;
+  const exc = REGRAS_PC.find(r=> r.ncm && ncm.startsWith(r.ncm) && (!r.regime || r.regime===reg)
+      && !(r.exige && r.exige.length && !r.exige.some(t=>d.includes(t)))
+      && !(r.exclui && r.exclui.length && r.exclui.some(t=>d.includes(t))));
+  if(reg==='simples'){
+    out.trib = exc ? (CST_PC_ROTULO[exc.cst_pis]||'') : 'Tributado no DAS';
+    out.nat  = exc ? (exc.natureza_receita||'') : '';
+    out.fund = 'Simples Nacional: PIS/Cofins recolhidos no DAS (LC 123/2006, art. 13, IV e V)'
+             + (exc ? ' · '+exc.fundamento+' — segregar a receita no PGDAS-D' : '');
+    return out;
+  }
+  const r = exc || REGRAS_PC.find(x=>!x.ncm && x.regime===reg);
+  if(!r){
+    out.fund = reg ? 'Regra de PIS/Cofins do regime '+(reg==='real'?'Lucro Real':'Lucro Presumido')+' ainda não aprovada na curadoria'
+                   : 'Regime tributário do cliente não informado — PIS/Cofins não preenchidos';
+    return out;
+  }
+  out.cst = r.cst_pis||''; out.cstE = r.cst_entrada || CST_PC_ENTRADA[out.cst] || '';
+  out.aliqPis = pcNum(r.aliquota_pis ?? (exc?0:'')); out.aliqCofins = pcNum(r.aliquota_cofins ?? (exc?0:''));
+  out.nat = r.natureza_receita||'';
+  out.trib = CST_PC_ROTULO[out.cst] || '';
+  out.fund = r.fundamento + (r.tabela_sped ? ' — Tabela '+r.tabela_sped+' da EFD-Contribuições' : '');
+  return out;
 }
 
 /* Substituição tributária pelo anexo oficial da UF — não mais pelo CEST que o
@@ -602,7 +818,12 @@ const CAMPOS = [
   ['cstCbs','CST CBS',              ['cst cbs']],
   ['ctIbs', 'cClassTrib IBS',       ['classtrib ibs']],
   ['dsIbs', 'Descrição cClassTrib IBS', ['descricao classtrib ibs','descrição classtrib ibs']],
-  ['cstIbs','CST IBS',              ['cst ibs']]
+  ['cstIbs','CST IBS',              ['cst ibs']],
+  ['cstPis','CST PIS/COFINS saída',  ['cst pis/cofins','cst pis','cst saida pis','cst pis saida']],
+  ['cstPisE','CST PIS/COFINS entrada',['cst pis entrada','cst entrada pis','cst pis/cofins entrada']],
+  ['aliqPis','Alíquota PIS (%)',     ['aliquota pis','alíquota pis','aliq pis','% pis']],
+  ['aliqCofins','Alíquota COFINS (%)',['aliquota cofins','alíquota cofins','aliq cofins','% cofins']],
+  ['natRec','Natureza da receita',   ['natureza da receita','natureza receita','nat receita','nat. receita','cod natureza']]
 ];
 
 async function montarMapa(){
@@ -615,7 +836,8 @@ async function montarMapa(){
   }
   const nh=HEADERS.map(h=>norm(h||''));
   const NAO = {desc:['classtrib','cst','cfop','ncm','cest','cod'], cst:['ibs','cbs','pis','cofins','ipi'],
-    valor:['icms','ipi'], aliq:['ipi','pis','cofins','ibs','cbs','mva','reduc','icms st','interestad','fcp']};
+    valor:['icms','ipi'], aliq:['ipi','pis','cofins','ibs','cbs','mva','reduc','icms st','interestad','fcp'],
+    cstPis:['entrada','ibs','cbs','icms'], cstPisE:['saida','ibs','cbs','icms']};
   CAMPOS.forEach(([k,,alvos])=>{
     if(MAPA[k]!==undefined) return;
     const pode = h=>h && !(NAO[k]||[]).some(x=>h.includes(x));
@@ -726,14 +948,22 @@ $('btnRodar').onclick = ()=>{
     item.cfopS = item.cfopSOrig || f.cfopS; item.cfopSSug = !item.cfopSOrig;
     item.cfopE = f.cfopE; item.cfopESug = true;   // vazio em toda a planilha: sempre sugestão
     item.notaFiscal = f.nota;
+    const pc = pisCofinsDoItem(item, CLIENTE);
+    item.cstPis=pc.cst; item.cstPisE=pc.cstE; item.aliqPis=pc.aliqPis; item.aliqCofins=pc.aliqCofins;
+    item.natRec=pc.nat; item.tribPc=pc.trib; item.fundPc=pc.fund;
+    const orig = k => MAPA[k]!=='' && MAPA[k]!==undefined ? (r[MAPA[k]]+'').trim() : '';
+    item.cstPisOrig=orig('cstPis'); item.cstPisEOrig=orig('cstPisE'); item.aliqPisOrig=orig('aliqPis');
+    item.aliqCofinsOrig=orig('aliqCofins'); item.natRecOrig=orig('natRec');
+    if(ESCOPO.modo==='vazios' || !ESCOPO.pis){ if(item.cstPisOrig) item.cstPis=item.cstPisOrig; }
     if(dig(item.ncm).length!==8){
       // sem NCM válido não há base para enquadrar: nada é preenchido, o item vai para conferência
       Object.assign(item,{aliq:'',redBc:'',mva:'',cest:'',ct:'',cstTrib:'',ctDesc:'',cfopS:item.cfopSOrig,cfopE:'',
+        cstPis:item.cstPisOrig||'',cstPisE:'',aliqPis:'',aliqCofins:'',natRec:'',tribPc:'',fundPc:'',
         cst:item.cstOrig, fundIcms:'', ncmStatus:'err'});
       item.nota=[item.nota,'Sem NCM válido: ICMS, CFOP e IBS/CBS não foram preenchidos'].filter(Boolean).join(' · ');
     }
     item.status = item.ncmStatus==='err' ? 'err'
-                : (item.confIbs==='rev' || item.cstSug || item.ncmStatus==='rev'
+                : (item.confIbs==='rev' || item.ncmStatus==='rev'
                    || item.cestDivergente || (item.st && !item.st.confirmado)) ? 'rev' : 'ok';
     ITENS.push(item);
   });
@@ -1088,9 +1318,15 @@ function destinos(){
   const fimCliente = ws && ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).e.c + 1 : HEADERS.length;
   let prox = Math.max(HEADERS.length, fimCliente); const d={}; const novas=[];
   const ATIVO = {ncm:'ncm', cest:'cest', mva:'cest', cst:'icms', aliq:'icms', red:'icms', cfopS:'cfop', cfopE:'cfop',
-                 ctCbs:'ibs', dsCbs:'ibs', cstCbs:'ibs', ctIbs:'ibs', dsIbs:'ibs', cstIbs:'ibs'};
+                 ctCbs:'ibs', dsCbs:'ibs', cstCbs:'ibs', ctIbs:'ibs', dsIbs:'ibs', cstIbs:'ibs',
+                 cstPis:'pis', cstPisE:'pis', aliqPis:'pis', aliqCofins:'pis', natRec:'pis', tribPc:'pis'};
+  const simplesCli = regimeFederal(CLIENTE)==='simples';
+  const SO_NORMAL = new Set(['cstPis','cstPisE','aliqPis','aliqCofins']);   // no Simples, PIS/Cofins vão no DAS
   const pede = (chave, titulo)=>{
     if(ESCOPO[ATIVO[chave]]===false) return undefined;
+    const semColuna = MAPA[chave]==='' || MAPA[chave]===undefined;
+    if(ATIVO[chave]==='pis' && !pcAtivo() && semColuna) return undefined;
+    if(simplesCli && SO_NORMAL.has(chave) && semColuna) return undefined;
     if(MAPA[chave]!=='' && MAPA[chave]!==undefined){
       const c=+MAPA[chave];
       if(!colunaTemFormula(c)) return c;
@@ -1112,6 +1348,12 @@ function destinos(){
   d.ctIbs = pede('ctIbs','CLASSTRIB IBS');
   d.dsIbs = pede('dsIbs','DESCRIÇÃO CLASSTRIB IBS');
   d.cstIbs= pede('cstIbs','CST IBS');
+  d.cstPis= pede('cstPis','CST PIS/COFINS SAÍDA');
+  d.cstPisE=pede('cstPisE','CST PIS/COFINS ENTRADA');
+  d.aliqPis=pede('aliqPis','ALÍQUOTA PIS (%)');
+  d.aliqCofins=pede('aliqCofins','ALÍQUOTA COFINS (%)');
+  d.natRec= pede('natRec','NATUREZA DA RECEITA');
+  d.tribPc= simplesCli ? pede('tribPc','PIS/COFINS NO SIMPLES') : undefined;
   return {d, novas};
 }
 
@@ -1167,7 +1409,9 @@ async function caminhoAba(zip){
 /* ---------- abas de transparência: correções aplicadas e resumo ---------- */
 const ROTULO_CAMPO = {ncm:'NCM', cest:'CEST', cst:'CST/CSOSN ICMS', cfopS:'CFOP saída',
                       aliq:'Alíquota ICMS', red:'Redução BC ICMS',
-                      cfopE:'CFOP entrada', cclasstrib:'cClassTrib IBS/CBS'};
+                      cfopE:'CFOP entrada', cclasstrib:'cClassTrib IBS/CBS',
+                      cstPis:'CST PIS/COFINS saída', cstPisE:'CST PIS/COFINS entrada',
+                      aliqPis:'Alíquota PIS', aliqCofins:'Alíquota COFINS', natRec:'Natureza da receita'};
 
 function autoria(chave, campo){
   for(let k=TRILHA.length-1;k>=0;k--){ const t=TRILHA[k];
@@ -1188,15 +1432,16 @@ function fundamentoLegivel(it){
 
 let PREENCHIDOS = {};
 /* o que o usuário pediu para corrigir, e como */
-let ESCOPO = {ncm:true, cest:true, icms:true, ibs:true, cfop:true, modo:'corrigir'};
+let ESCOPO = {ncm:true, cest:true, icms:true, ibs:true, cfop:true, pis:true, modo:'corrigir'};
 function lerEscopo(){
   const ck = id=>{ const e=$(id); return e ? e.checked : true; };
   const m = document.querySelector('input[name="opModo"]:checked');
-  return {ncm:ck('opNcm'), cest:ck('opCest'), icms:ck('opIcms'), ibs:ck('opIbs'), cfop:ck('opCfop'),
+  return {ncm:ck('opNcm'), cest:ck('opCest'), icms:ck('opIcms'), ibs:ck('opIbs'), cfop:ck('opCfop'), pis:ck('opPis'),
           modo: m ? m.value : 'corrigir'};
 }
 const GRUPO_CAMPO = {ncm:'ncm', cest:'cest', mva:'cest', cst:'icms', aliq:'icms', red:'icms',
-                     cfopS:'cfop', cfopE:'cfop', cclasstrib:'ibs'};
+                     cfopS:'cfop', cfopE:'cfop', cclasstrib:'ibs',
+                     cstPis:'pis', cstPisE:'pis', aliqPis:'pis', aliqCofins:'pis', natRec:'pis'};
 /* indústria (CNAE divisões 10 a 33) destaca ICMS próprio mesmo com ST; comércio não */
 function ehIndustria(cliente){
   const c = dig((cliente && cliente.cnae_principal) || ''); const div = +c.slice(0,2);
@@ -1215,7 +1460,11 @@ function linhasCorrecao(){
                  return isNaN(n)?t:String(n<=1&&n>0?+(n*100).toFixed(2):+n.toFixed(2)); };
   const add=(it,campo,de,para,motivo)=>{
     de=(de==null?'':String(de)).trim(); para=(para==null?'':String(para)).trim();
-    if((campo==='aliq'||campo==='red') && de && para) { de=pct(de); para=pct(para); }
+    if(['aliq','red'].includes(campo) && de && para) { de=pct(de); para=pct(para); }
+    if(['aliqPis','aliqCofins'].includes(campo) && de && para){   // 0,65% não é fração: sem escala
+      const n=v=>{ const x=parseFloat(String(v).replace('%','').replace(',','.')); return isNaN(x)?String(v):String(+x.toFixed(4)); };
+      de=n(de); para=n(para); }
+    if(['cstPis','cstPisE'].includes(campo) && de && para && dig(de).padStart(2,'0')===dig(para).padStart(2,'0')) return;
     if(!para || de===para) return;
     const grupo = GRUPO_CAMPO[campo]; if(grupo && !ESCOPO[grupo]) return;
     if(ESCOPO.modo==='vazios' && de && de!=='(em branco)'){
@@ -1241,6 +1490,11 @@ function linhasCorrecao(){
     add(it,'aliq',       it.aliqOrig, (it.st && it.aliq==='' && it.aliqOrig) ? 'sem destaque (ST)' : it.aliq, it.fundIcms||'');
     add(it,'red',        '',          it.redBc, it.fundIcms||'');
     add(it,'cclasstrib', it.ctOrig,   it.ct,   fundamentoLegivel(it));
+    add(it,'cstPis',     it.cstPisOrig, it.cstPis, it.fundPc||'');
+    add(it,'cstPisE',    it.cstPisEOrig, it.cstPisE, it.fundPc||'');
+    add(it,'aliqPis',    it.aliqPisOrig, it.aliqPis, it.fundPc||'');
+    add(it,'aliqCofins', it.aliqCofinsOrig, it.aliqCofins, it.fundPc||'');
+    add(it,'natRec',     it.natRecOrig, it.natRec, it.fundPc||'');
   });
   return L;
 }
@@ -1284,6 +1538,9 @@ function abaResumo(){
   [...porSit.entries()].forEach(([k,v])=>m.push([(SIT[k]?SIT[k][1]:k),v]));
   m.push([], ['Base legal do enquadramento IBS/CBS: LC 214/2025 e anexos; NCM conforme TIPI vigente'],
             ['Substituição tributária e CEST conforme anexo do RICMS da UF do cliente'],
+            ...(pcExtinto() ? [['PIS/Cofins: extintos a partir de 01/01/2027 (EC 132/2023 — ADCT, art. 126, II); campos não preenchidos']]
+               : !TEM_EXCECOES_PC() ? [['PIS/Cofins: não preenchidos — aguardando a carga das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições (monofásico, alíquota zero, isenção, suspensão), sem as quais a regra geral erraria esses produtos']]
+               : [['PIS/Cofins: regra geral do regime e exceções por NCM das tabelas 4.3.10 a 4.3.17 da EFD-Contribuições; válidos para fatos geradores até 31/12/2026']]),
             ['Este resumo é gerado pela ferramenta e não substitui a conferência final do responsável técnico']);
   return m;
 }
@@ -1387,6 +1644,12 @@ $('btnExportar').onclick = async ()=>{
         W(L,d.ctIbs, it.ct,    it);
         W(L,d.dsIbs, it.ctDesc,it);
         W(L,d.cstIbs,it.cstTrib,it);
+        W(L,d.cstPis,it.cstPis,it);
+        W(L,d.cstPisE,it.cstPisE,it);
+        W(L,d.aliqPis,it.aliqPis,it,true);
+        W(L,d.aliqCofins,it.aliqCofins,it,true);
+        W(L,d.natRec,it.natRec,it,true);
+        W(L,d.tribPc,it.tribPc,it);
         if(++n%800===0) await new Promise(r=>setTimeout(r,0));
       }
       const dim=doc.getElementsByTagName('dimension')[0];
@@ -1414,7 +1677,9 @@ $('btnExportar').onclick = async ()=>{
     row[d.ncm]=it.ncm; row[d.cest]=it.cest||''; row[d.cst]=it.cst; row[d.cfopS]=it.cfopS; row[d.cfopE]=it.cfopE;
     row[d.aliq]=it.aliq||''; row[d.red]=it.redBc||''; row[d.mva]=it.mva||'';
     row[d.ctCbs]=it.ct; row[d.dsCbs]=it.ctDesc; row[d.cstCbs]=it.cstTrib;
-    row[d.ctIbs]=it.ct; row[d.dsIbs]=it.ctDesc; row[d.cstIbs]=it.cstTrib; });
+    row[d.ctIbs]=it.ct; row[d.dsIbs]=it.ctDesc; row[d.cstIbs]=it.cstTrib;
+    row[d.cstPis]=it.cstPis||''; row[d.cstPisE]=it.cstPisE||''; row[d.aliqPis]=it.aliqPis||'';
+    row[d.aliqCofins]=it.aliqCofins||''; row[d.natRec]=it.natRec||''; });
   const wb2=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(aoa), SHEET);
   const corr=abaCorrecoes();
   XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(corr), 'CORREÇÕES APLICADAS');
@@ -1508,7 +1773,7 @@ async function carregarClientes(){
 }
 
 /* ============================ ATUALIZAÇÕES ============================ */
-$('btnRecarregar').onclick=()=>carregarAtos();
+$('btnRecarregar').onclick=()=>{ carregarAtos(); carregarFontes(); };
 async function carregarAtos(){
   const {data,error} = await sb.from('atualizacao_legislativa').select('*').order('detectado_em',{ascending:false}).limit(200);
   if(error){ $('tbAtos').innerHTML=`<tr><td colspan="7" class="muted">${esc(error.message)}</td></tr>`; return; }
@@ -1528,6 +1793,32 @@ async function carregarAtos(){
     carregarAtos();
   });
 }
+
+/* ---------- fontes vigiadas por hash ---------- */
+const dataHora = v => v ? new Date(v).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'}) : '—';
+async function carregarFontes(){
+  const {data,error} = await sb.from('fonte_vigiada').select('id,trilho,uf,nome,url,modo,verificado_em,alterado_em,ultimo_status,erro,ativo').order('trilho').order('id');
+  if(!$('tbFontes')) return;
+  if(error){ $('tbFontes').innerHTML=`<tr><td colspan="5" class="muted">${esc(error.message)}</td></tr>`; return; }
+  $('btnVerificarFontes').hidden = !EH_ADMIN;
+  $('tbFontes').innerHTML = (data&&data.length) ? data.map(f=>`<tr>
+      <td>${f.trilho==='federal'?'Federal':'Estadual'+(f.uf?' · '+esc(f.uf):'')}</td>
+      <td><a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.nome)}</a></td>
+      <td class="mono">${dataHora(f.verificado_em)}</td>
+      <td class="mono">${dataHora(f.alterado_em)}</td>
+      <td>${!f.ativo?'<span class="chip c-intg">pausada</span>'
+           : f.erro?`<span class="chip c-err" title="${esc(f.erro)}">sem acesso</span>`
+           : f.verificado_em?'<span class="chip c-ok">vigiando</span>':'<span class="chip c-rev">aguardando 1ª leitura</span>'}</td>
+    </tr>`).join('') : '<tr><td colspan="5" class="muted">Nenhuma fonte cadastrada.</td></tr>';
+}
+if($('btnVerificarFontes')) $('btnVerificarFontes').onclick = async ()=>{
+  $('btnVerificarFontes').disabled=true; toast('Conferindo as fontes oficiais…');
+  const {data,error} = await sb.functions.invoke('vigia-fontes',{body:{origem:'manual'}});
+  $('btnVerificarFontes').disabled=false;
+  if(error){ toast('Não foi possível verificar: '+esc(error.message)); return; }
+  toast(`<b>${data.verificadas}</b> fonte(s) conferida(s), <b>${data.alteradas}</b> com alteração.`);
+  carregarFontes(); carregarAtos();
+};
 
 /* ============================ MEMÓRIA ============================ */
 async function carregarMemoria(){

@@ -69,6 +69,8 @@
       <button class="navitem" data-tela="atualizacoes"><b>3</b> Atualizações</button>
       <button class="navitem" data-tela="diagnostico"><b>4</b> Diagnóstico por NCM</button>
       <button class="navitem" data-tela="base"><b>5</b> Base e memória</button>
+      <button class="navitem" data-tela="familias"><b>6</b> Famílias de produto</button>
+      <button class="navitem" data-tela="curadoria" id="navCuradoria" hidden><b>★</b> Curadoria das regras</button>
       <button class="navitem" data-tela="acessos" id="navAcessos" hidden><b>★</b> Acessos</button>
     </nav>
     <div class="navfoot">
@@ -114,6 +116,7 @@
             <label><input type="checkbox" id="opIcms" checked> CST, alíquota e redução de ICMS</label>
             <label><input type="checkbox" id="opIbs" checked> cClassTrib e CST de IBS/CBS</label>
             <label><input type="checkbox" id="opCfop" checked> CFOP</label>
+            <label><input type="checkbox" id="opPis" checked> PIS/COFINS (CST, alíquota e natureza da receita)</label>
           </div>
           <div class="escopo-modo">
             <label><input type="radio" name="opModo" value="corrigir" checked> Preencher o que está vazio e corrigir o que está errado</label>
@@ -209,6 +212,17 @@
         <table><thead><tr><th>Detectado</th><th>Ato</th><th>Fonte</th><th>Impacto</th><th>Efeitos</th><th>Situação</th><th></th></tr></thead>
         <tbody id="tbAtos"></tbody></table>
       </div>
+      <div class="card fontes-card">
+        <div class="bar" style="margin-top:0">
+          <h2 style="margin:0">Fontes oficiais vigiadas por hash</h2><span class="spacer"></span>
+          <button class="btn quiet" id="btnVerificarFontes" hidden>Verificar agora</button>
+        </div>
+        <p class="muted">Dias úteis às 5h20, a nuvem confere a assinatura de cada fonte. Se mudou, entra um aviso na lista acima — a leitura do documento continua sendo feita no chat, e a regra só vale depois da Curadoria.</p>
+        <div class="tabwrap sm">
+          <table><thead><tr><th>Trilho</th><th>Fonte</th><th>Última verificação</th><th>Última alteração</th><th>Situação</th></tr></thead>
+          <tbody id="tbFontes"></tbody></table>
+        </div>
+      </div>
     </section>
 
     <!-- ---------- TELA 4 · BASE ---------- -->
@@ -271,6 +285,49 @@
     </section>
 
     <!-- ---------- TELA 5 · ACESSOS (só administrador) ---------- -->
+    <section class="tela" id="tela-curadoria">
+      <header class="ph">
+        <div>
+          <h1>Curadoria das regras</h1>
+          <p>Toda regra extraída de documento oficial passa por aqui antes de valer no cadastro. Só regra aprovada e dentro da vigência é usada.</p>
+        </div>
+        <button class="btn quiet" id="btnRecarregarCur">Recarregar</button>
+      </header>
+      <div class="kpis" id="kpisCur"></div>
+      <div class="bar filtros-cur">
+        <select id="curTrilho"><option value="estadual">Trilho estadual (RICMS/UF)</option><option value="federal">Trilho federal (PIS/COFINS, IBS/CBS)</option></select>
+        <select id="curSit"><option value="pendente">Pendentes</option><option value="aprovada">Aprovadas</option><option value="rejeitada">Rejeitadas</option><option value="">Todas</option></select>
+        <select id="curEsp"><option value="">Todas as espécies</option></select>
+        <input type="search" id="curBusca" placeholder="NCM, CEST, descrição ou fundamento…">
+        <span class="muted" id="curInfo"></span>
+      </div>
+      <div class="tabwrap">
+        <table><thead><tr><th>Espécie</th><th>NCM / CEST</th><th>Descrição</th><th>Tratamento</th><th>Fundamento</th><th>Vigência</th><th>Situação</th><th>Ação</th></tr></thead>
+        <tbody id="tbCur"></tbody></table>
+      </div>
+    </section>
+
+    <section class="tela" id="tela-familias">
+      <header class="ph">
+        <div>
+          <h1>Famílias de produto</h1>
+          <p>Produtos da planilha em análise agrupados por NCM e pelo nome principal da descrição. Decida uma vez pela família inteira — com prévia antes de aplicar.</p>
+        </div>
+      </header>
+      <div class="card" id="famVazio"><p class="muted">Suba e processe uma planilha em <b>Preencher cadastro</b> para ver as famílias.</p></div>
+      <div id="famCorpo" hidden>
+        <div class="bar">
+          <input type="search" id="famBusca" placeholder="Buscar família, NCM ou produto…">
+          <label class="muted"><input type="checkbox" id="famSoDiv"> só famílias com divergência interna</label>
+          <span class="muted" id="famInfo"></span>
+        </div>
+        <div class="tabwrap">
+          <table><thead><tr><th>Família</th><th>NCM</th><th>Itens</th><th>CEST</th><th>CST ICMS</th><th>Alíquota</th><th>cClassTrib</th><th>Situação</th><th>Vincular</th></tr></thead>
+          <tbody id="tbFam"></tbody></table>
+        </div>
+      </div>
+    </section>
+
     <section class="tela" id="tela-acessos">
       <header class="ph">
         <div>

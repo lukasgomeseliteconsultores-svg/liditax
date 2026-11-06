@@ -243,3 +243,13 @@ tr.sel td{background:var(--accent-2)!important}
 .escopo input{width:auto!important;margin:0}
 .escopo-itens{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:10px}
 .escopo-modo{display:flex;flex-direction:column;gap:6px;padding-top:10px;border-top:1px dashed var(--line)}
+
+/* curadoria e famílias */
+.filtros-cur select,.filtros-cur input[type=search]{min-width:180px;width:auto}
+#famCorpo .bar label{display:inline-flex;gap:6px;align-items:center}
+#famCorpo .bar input[type=checkbox]{width:auto;margin:0}
+.trecho{margin-top:6px;padding:8px 10px;border-left:3px solid var(--line);background:var(--paper);font-size:12.5px;line-height:1.45;max-width:520px;white-space:normal}
+.fam-vinc{white-space:nowrap}
+.fam-vinc select,.fam-vinc input{font-size:12.5px;padding:4px 6px;width:auto}
+.fam-vinc input{width:92px}
+.fam-vinc .btn{padding:4px 10px}
